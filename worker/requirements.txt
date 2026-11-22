@@ -1,0 +1,11 @@
+torch>=2.3.0
+protobuf>=7.36.0
+diffusers>=0.32.2
+transformers>=4.49.0
+accelerate>=1.2.0
+sentencepiece>=0.2.0
+ftfy>=6.2.0
+imageio[ffmpeg]>=2.36.0
+edge-tts>=6.1.12
+gTTS>=2.5.4
+requests>=2.32.0
