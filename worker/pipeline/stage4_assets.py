@@ -96,7 +96,7 @@ def _animate_illustration_with_wan(
             pipe = WanImageToVideoPipeline.from_pretrained(
                 model_id, vae=vae, torch_dtype=torch.bfloat16, token=hf_token
             )
-            if vram_gb >= 80.0:
+            if vram_gb >= 75.0:
                 pipe.to("cuda")
             else:
                 pipe.enable_model_cpu_offload()
