@@ -67,6 +67,23 @@ export default function VideoStudioPage() {
     }
   }
 
+  async function resetStuckLesson(lessonId: string) {
+    setBusyId(lessonId);
+    try {
+      const res = await fetch(`/api/lessons/${lessonId}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ videoStatus: "pending", videoError: null }),
+      });
+      if (res.ok) {
+        setToast("Reset stuck job — click Generate Video to render again.");
+        await loadJobs(true);
+      }
+    } finally {
+      setBusyId(null);
+    }
+  }
+
   async function queueAllPending() {
     const pending = jobs.filter(
       (j) => j.videoStatus === "pending" || j.videoStatus === "failed"
@@ -290,10 +307,21 @@ export default function VideoStudioPage() {
                         <CheckCircle2 className="w-3.5 h-3.5" /> Watch Video
                       </Link>
                     ) : job.videoStatus === "processing" ? (
-                      <span className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full border border-[#c4b0f0] bg-[#f1ecfa] text-[#0e0e0e] text-xs font-semibold">
-                        <Loader2 className="w-3.5 h-3.5 animate-spin" />{" "}
-                        Rendering...
-                      </span>
+                      <>
+                        <span className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full border border-[#c4b0f0] bg-[#f1ecfa] text-[#0e0e0e] text-xs font-semibold">
+                          <Loader2 className="w-3.5 h-3.5 animate-spin" />{" "}
+                          Rendering...
+                        </span>
+                        <button
+                          type="button"
+                          disabled={busyId === job.lessonId}
+                          onClick={() => resetStuckLesson(job.lessonId)}
+                          title="Reset if Colab disconnected mid-render"
+                          className="inline-flex items-center gap-1 px-2.5 py-1.5 border border-[#d9d9d4] hover:border-[#b31f1f] hover:text-[#b31f1f] bg-[#ffffff] text-[#595954] text-xs font-semibold"
+                        >
+                          Reset
+                        </button>
+                      </>
                     ) : job.videoStatus === "queued" ? (
                       <span className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full border border-[#80807a] bg-[#f7f7f2] text-[#0e0e0e] text-xs font-semibold">
                         <Clock className="w-3.5 h-3.5" /> In Queue
