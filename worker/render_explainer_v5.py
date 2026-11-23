@@ -265,6 +265,7 @@ def render_lesson_institutional(
         check=True,
     )
 
+    portrait_mp4: Path | None = None
     if render_portrait:
         portrait_mp4 = out_mp4.with_name(out_mp4.stem + "_portrait_9x16.mp4")
         print("[Institutional] Stage 6 Rendering 1080p Portrait (9:16)...")
@@ -280,7 +281,12 @@ def render_lesson_institutional(
     shutil.copy2(timing["vtt_path"], out_vtt)
     # Record this lesson's scene sequence so the next lesson in the same course must differ
     prev_seqs.append(qa["scene_sequence"])
-    return qa
+    return {
+        "qa": qa,
+        "licenses": licenses,
+        "transcript_text": timing.get("transcript_text") or "",
+        "portrait_mp4": str(portrait_mp4) if (portrait_mp4 and portrait_mp4.exists()) else None,
+    }
 
 
 def main() -> None:
@@ -333,21 +339,34 @@ def main() -> None:
                 timeout=20,
             )
             try:
+                do_portrait = args.portrait or os.environ.get("OKIKE_RENDER_PORTRAIT", "0").strip() in ("1", "true", "yes")
                 with tempfile.TemporaryDirectory() as out_tmp:
                     mp4 = Path(out_tmp) / f"{lesson_id}.mp4"
                     vtt = Path(out_tmp) / f"{lesson_id}.vtt"
-                    render_lesson_institutional(
+                    bundle = render_lesson_institutional(
                         job, remotion_dir, latentsync_dir, host_female, host_male,
-                        work_root, course_sequences, mp4, vtt, render_portrait=args.portrait,
+                        work_root, course_sequences, mp4, vtt, render_portrait=do_portrait,
                     )
                     # Upload directly to Cloudinary to bypass Vercel's 4.5MB serverless body limit!
                     cloud_video_url = upload_direct_to_cloudinary(mp4, lesson_id, is_video=True)
                     if cloud_video_url:
                         cloud_vtt_url = upload_direct_to_cloudinary(vtt, f"{lesson_id}_vtt", is_video=False)
+                        cloud_portrait_url = None
+                        if bundle.get("portrait_mp4"):
+                            cloud_portrait_url = upload_direct_to_cloudinary(
+                                Path(bundle["portrait_mp4"]), f"{lesson_id}_portrait", is_video=True
+                            )
                         up = requests.post(
                             f"{base}/api/worker/jobs/{lesson_id}/upload",
                             headers=headers,
-                            json={"videoUrl": cloud_video_url, "subtitleUrl": cloud_vtt_url},
+                            json={
+                                "videoUrl": cloud_video_url,
+                                "portraitVideoUrl": cloud_portrait_url,
+                                "subtitleUrl": cloud_vtt_url,
+                                "transcriptText": bundle.get("transcript_text") or "",
+                                "licenses": bundle.get("licenses") or [],
+                                "qaReport": bundle.get("qa") or None,
+                            },
                             timeout=30,
                         )
                         up.raise_for_status()

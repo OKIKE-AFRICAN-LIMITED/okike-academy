@@ -35,9 +35,24 @@ export async function POST(
       const subtitleUrl = body.subtitleUrl
         ? String(body.subtitleUrl).trim()
         : null;
+      const portraitVideoUrl = body.portraitVideoUrl
+        ? String(body.portraitVideoUrl).trim()
+        : null;
+      const transcriptText = body.transcriptText
+        ? String(body.transcriptText)
+        : null;
+      const licenses = Array.isArray(body.licenses) ? body.licenses : undefined;
+      const qaReport = body.qaReport && typeof body.qaReport === "object"
+        ? body.qaReport
+        : undefined;
+
       const updated = await updateLesson(lessonId, {
         videoUrl,
+        portraitVideoUrl,
         subtitleUrl,
+        transcriptText,
+        ...(licenses ? { licenses } : {}),
+        ...(qaReport ? { qaReport } : {}),
         videoStatus: "ready",
         videoError: null,
       });

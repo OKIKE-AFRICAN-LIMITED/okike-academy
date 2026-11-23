@@ -44,6 +44,46 @@ export interface QuizQuestion {
 
 export type VideoStatus = "pending" | "queued" | "processing" | "ready" | "failed";
 
+export interface AssetLicense {
+  asset_id: string;
+  asset_type: string;
+  file_path: string;
+  alt_text: string;
+  source: string;
+  license: string;
+  author: string;
+  date: string;
+  prompt?: string;
+}
+
+export interface QaReport {
+  passed: boolean;
+  failures: string[];
+  total_duration_sec: number;
+  scene_count: number;
+  asset_count: number;
+  pipeline_version?: string;
+}
+
+export interface SmeReview {
+  reviewerName: string;
+  reviewerTitle?: string;
+  reviewedAt: string;
+  scores: {
+    hook: number;
+    variety: number;
+    clarity: number;
+    visualFit: number;
+    sync: number;
+    mobileReadability: number;
+    depth: number;
+    accuracy: number;
+  };
+  averageScore: number;
+  approved: boolean;
+  notes?: string;
+}
+
 export interface Lesson {
   id: string;
   moduleId: string;
@@ -58,7 +98,12 @@ export interface Lesson {
   videoStoryboard: VideoScene[];
   videoStatus: VideoStatus;
   videoUrl: string | null;
+  portraitVideoUrl?: string | null;
   subtitleUrl: string | null;
+  transcriptText?: string | null;
+  licenses?: AssetLicense[];
+  qaReport?: QaReport | null;
+  smeReview?: SmeReview | null;
   videoModel: string;
   videoError: string | null;
   completed: boolean;

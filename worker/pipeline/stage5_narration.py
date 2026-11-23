@@ -1,17 +1,19 @@
 """
-Stage 5: Narration, Timing, Loudness Normalization & Accessibility Outputs
-==========================================================================
-- Applies Okike pronunciation dictionary for technical terms & brand names
-- Generates per-scene Kokoro-82M audio (content-hash cached!)
+Stage 5: Broadcast Narration, Whisper Word Sync, Ambient Mastering & Accessibility
+==================================================================================
+- Applies Okike pronunciation dictionary for technical & institutional terms
+- Generates per-scene Kokoro-82M narration audio (content-hash cached!)
 - Measures exact real audio duration per scene (NO fixed durations!)
-- Normalizes final audio mix to -16 LUFS integrated / <= -1 dBTP via ffmpeg loudnorm
+- Runs Whisper word-level timestamp alignment (<50 ms drift) with proportional fallback
+- Mixes an original, subtle procedural ambient music bed (-30 dB under voice)
+- Normalizes final master to -16 LUFS integrated / <= -1.0 dBTP via ffmpeg loudnorm
 - Generates millisecond-synced WebVTT (.vtt), SRT (.srt), and full accessible transcript.txt
   (including alt-text descriptions of key visuals per Section 10 of the brief)
 """
 
 from __future__ import annotations
 
-import json
+import os
 import re
 import subprocess
 from pathlib import Path
@@ -39,7 +41,11 @@ PRONUNCIATION_DICT: dict[str, str] = {
     "HTML": "H T M L",
     "JSON": "Jay-son",
     "WCAG": "W C A G",
+    "HTTPS": "H T T P S",
+    "DDoS": "D-Doss",
 }
+
+_WHISPER_MODEL: Any = None
 
 
 def apply_pronunciation(text: str) -> str:
@@ -60,15 +66,131 @@ def _fmt_srt(sec: float) -> str:
     return _fmt_vtt(sec).replace(".", ",")
 
 
-def normalize_to_minus16_lufs(in_wav: Path, out_wav: Path) -> None:
-    """Normalizes integrated loudness to -16 LUFS with true peak <= -1.0 dBTP."""
+def _get_whisper_model() -> Any:
+    global _WHISPER_MODEL
+    if _WHISPER_MODEL is not None:
+        return _WHISPER_MODEL
+    try:
+        import whisper
+
+        _WHISPER_MODEL = whisper.load_model("base.en")
+        return _WHISPER_MODEL
+    except Exception as exc:
+        print(f"[Stage 5 Audio] Whisper word alignment unavailable ({exc}); using proportional timing.")
+        return None
+
+
+def _align_scene_words(
+    scene_wav: Path,
+    narration_display: str,
+    speech_dur: float,
+    cursor_sec: float,
+) -> list[dict[str, Any]]:
+    """Extracts exact word-level timestamps via Whisper (fallback: proportional)."""
+    model = _get_whisper_model()
+    if model is not None:
+        try:
+            res = model.transcribe(str(scene_wav), word_timestamps=True, language="en")
+            aligned: list[dict[str, Any]] = []
+            for seg in res.get("segments", []):
+                for w in seg.get("words", []):
+                    tok = str(w.get("word") or "").strip()
+                    if not tok:
+                        continue
+                    ws = cursor_sec + float(w.get("start", 0.0))
+                    we = cursor_sec + max(float(w.get("end", 0.0)), float(w.get("start", 0.0)) + 0.06)
+                    aligned.append(
+                        {
+                            "word": tok,
+                            "startSec": round(ws, 3),
+                            "endSec": round(we, 3),
+                            "startFrame": int(round(ws * FPS)),
+                            "endFrame": max(int(round(ws * FPS)) + 2, int(round(we * FPS))),
+                        }
+                    )
+            if aligned:
+                return aligned
+        except Exception as exc:
+            print(f"[Stage 5 Audio] Whisper scene alignment fallback ({exc})")
+
+    # Fallback: character-weighted proportional timing
+    tokens = narration_display.split()
+    if not tokens:
+        return []
+    weights = [max(2, len(t)) for t in tokens]
+    total_w = float(sum(weights))
+    out: list[dict[str, Any]] = []
+    t = cursor_sec
+    for tok, w in zip(tokens, weights):
+        dur = speech_dur * (w / total_w)
+        out.append(
+            {
+                "word": tok,
+                "startSec": round(t, 3),
+                "endSec": round(t + dur, 3),
+                "startFrame": int(round(t * FPS)),
+                "endFrame": max(int(round(t * FPS)) + 2, int(round((t + dur) * FPS))),
+            }
+        )
+        t += dur
+    return out
+
+
+def master_broadcast_audio(
+    raw_voice_wav: Path,
+    out_wav: Path,
+    total_duration_sec: float,
+) -> None:
+    """
+    Mixes a subtle, original procedural ambient pad (-30 dB under narration)
+    and normalizes the master mix to -16 LUFS integrated / <= -1.0 dBTP.
+    """
+    use_bed = os.environ.get("OKIKE_AMBIENT_BED", "1").strip() not in ("0", "false", "off")
+    if use_bed and total_duration_sec > 4.0:
+        fade_out_start = max(1.0, total_duration_sec - 2.2)
+        # Warm Cmaj9 soft harmonic ambient pad synthesized procedurally (100% original, zero licensing risk)
+        bed_expr = (
+            f"aevalsrc=0.025*(sin(2*PI*130.81*t)+0.7*sin(2*PI*196.00*t)"
+            f"+0.5*sin(2*PI*246.94*t)+0.35*sin(2*PI*293.66*t))"
+            f"*(0.85+0.15*sin(2*PI*0.08*t)):s=44100:d={total_duration_sec:.2f}"
+        )
+        filter_complex = (
+            f"[0:a]aresample=44100,highpass=f=75,acompressor=threshold=-18dB:ratio=2.5:attack=15:release=180[voice];"
+            f"[1:a]lowpass=f=380,afade=t=in:st=0:d=1.8,afade=t=out:st={fade_out_start:.2f}:d=2.0,volume=0.22[bed];"
+            f"[voice][bed]amix=inputs=2:duration=first:dropout_transition=2,"
+            f"loudnorm=I=-16:TP=-1.0:LRA=11[out]"
+        )
+        cmd = [
+            "ffmpeg",
+            "-y",
+            "-i",
+            str(raw_voice_wav),
+            "-f",
+            "lavfi",
+            "-i",
+            bed_expr,
+            "-filter_complex",
+            filter_complex,
+            "-map",
+            "[out]",
+            "-ar",
+            "44100",
+            "-ac",
+            "2",
+            str(out_wav),
+        ]
+        res = subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        if res.returncode == 0 and out_wav.exists():
+            return
+
+    # Fallback: clean voice-only -16 LUFS normalization
     cmd = [
         "ffmpeg",
         "-y",
         "-i",
-        str(in_wav),
+        str(raw_voice_wav),
         "-af",
-        "loudnorm=I=-16:TP=-1.0:LRA=11",
+        "highpass=f=75,loudnorm=I=-16:TP=-1.0:LRA=11",
         "-ar",
         "44100",
         "-ac",
@@ -115,12 +237,11 @@ def run_stage5_narration(
         if scene_wav.exists():
             samples, sr = sf.read(str(scene_wav), dtype="float32")
         else:
-            samples, sr = kokoro.create(narration_spoken, voice=voice, speed=1.02, lang=lang)
+            samples, sr = kokoro.create(narration_spoken, voice=voice, speed=1.0, lang=lang)
             samples = samples.astype(np.float32)
             sf.write(str(scene_wav), samples, sr)
 
         speech_dur = len(samples) / float(sr)
-        # Extra thinking pause for pause_and_predict scenes
         extra_hold = 3.0 if sc.get("scene_type") == "pause_and_predict" else MIN_VISUAL_HOLD_SEC
         silence = np.zeros(int(sr * extra_hold), dtype=np.float32)
         scene_padded = np.concatenate([samples, silence])
@@ -131,33 +252,19 @@ def run_stage5_narration(
         sc["measured_duration_sec"] = round(scene_dur, 3)
         sc["durationInFrames"] = max(60, int(round(scene_dur * FPS)))
 
-        # Word-level timings (proportional within each scene; refined if Whisper is available)
-        tokens = narration_display.split()
-        if tokens:
-            sec_per_word = speech_dur / len(tokens)
-            for w_idx, tok in enumerate(tokens):
-                ws = cursor_sec + w_idx * sec_per_word
-                we = cursor_sec + (w_idx + 1) * sec_per_word
-                all_words.append(
-                    {
-                        "word": tok,
-                        "startSec": round(ws, 3),
-                        "endSec": round(we, 3),
-                        "startFrame": int(round(ws * FPS)),
-                        "endFrame": max(int(round(ws * FPS)) + 2, int(round(we * FPS))),
-                    }
-                )
+        # Whisper word-level alignment (fallback: character-weighted proportional)
+        scene_words = _align_scene_words(scene_wav, narration_display, speech_dur, cursor_sec)
+        all_words.extend(scene_words)
 
-        # Max 2-line caption chunks (~10 words per cue)
-        chunk_size = 10
-        cue_start = cursor_sec
-        for c_i in range(0, max(1, len(tokens)), chunk_size):
-            sub_words = tokens[c_i : c_i + chunk_size]
-            if not sub_words:
+        # Max 2-line caption cues (~9 words per cue) built directly from aligned timestamps
+        chunk_size = 9
+        for c_i in range(0, len(scene_words), chunk_size):
+            sub = scene_words[c_i : c_i + chunk_size]
+            if not sub:
                 continue
-            frac = len(sub_words) / max(1, len(tokens))
-            cue_end = min(cursor_sec + speech_dur, cue_start + speech_dur * frac)
-            cue_text = " ".join(sub_words)
+            cue_start = sub[0]["startSec"]
+            cue_end = sub[-1]["endSec"]
+            cue_text = " ".join(w["word"] for w in sub)
             vtt_lines.append(f"{_fmt_vtt(cue_start)} --> {_fmt_vtt(cue_end)}")
             vtt_lines.append(cue_text)
             vtt_lines.append("")
@@ -165,7 +272,6 @@ def run_stage5_narration(
             srt_lines.append(f"{_fmt_srt(cue_start)} --> {_fmt_srt(cue_end)}")
             srt_lines.append(cue_text)
             srt_lines.append("")
-            cue_start = cue_end
 
         # Accessible transcript with visual alt-text descriptions
         transcript_lines.append(
@@ -184,20 +290,25 @@ def run_stage5_narration(
     raw_master = audio_dir / "master_raw.wav"
     norm_master = audio_dir / "master_loudnorm.wav"
     sf.write(str(raw_master), np.concatenate(combined_chunks), sr)
-    normalize_to_minus16_lufs(raw_master, norm_master)
+    master_broadcast_audio(raw_master, norm_master, cursor_sec)
+
+    vtt_text = "\n".join(vtt_lines)
+    srt_text = "\n".join(srt_lines)
+    transcript_text = "\n".join(transcript_lines)
 
     vtt_path = audio_dir / "captions.vtt"
     srt_path = audio_dir / "captions.srt"
     transcript_path = audio_dir / "transcript.txt"
-    vtt_path.write_text("\n".join(vtt_lines), encoding="utf-8")
-    srt_path.write_text("\n".join(srt_lines), encoding="utf-8")
-    transcript_path.write_text("\n".join(transcript_lines), encoding="utf-8")
+    vtt_path.write_text(vtt_text, encoding="utf-8")
+    srt_path.write_text(srt_text, encoding="utf-8")
+    transcript_path.write_text(transcript_text, encoding="utf-8")
 
     return {
         "master_audio_path": str(norm_master),
         "vtt_path": str(vtt_path),
         "srt_path": str(srt_path),
         "transcript_path": str(transcript_path),
+        "transcript_text": transcript_text,
         "total_duration_sec": round(cursor_sec, 3),
         "total_frames": sum(int(sc["durationInFrames"]) for sc in scenes),
         "caption_words": all_words,

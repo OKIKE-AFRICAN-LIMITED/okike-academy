@@ -71,6 +71,22 @@ export async function ensureDb(): Promise<Client> {
     );
   `);
 
+  // Backward-compatible migrations for institutional compliance & portrait video columns
+  const extraCols = [
+    "ALTER TABLE lessons ADD COLUMN portrait_video_url TEXT",
+    "ALTER TABLE lessons ADD COLUMN transcript_text TEXT",
+    "ALTER TABLE lessons ADD COLUMN licenses_json TEXT",
+    "ALTER TABLE lessons ADD COLUMN qa_report_json TEXT",
+    "ALTER TABLE lessons ADD COLUMN sme_review_json TEXT",
+  ];
+  for (const sql of extraCols) {
+    try {
+      await db.execute(sql);
+    } catch {
+      // Column already exists
+    }
+  }
+
   _initialized = true;
 
   // Seed one starter course if empty so the platform is immediately explorable
@@ -357,7 +373,12 @@ function mapLessonRow(row: Record<string, unknown>): Lesson {
     ) as VideoScene[],
     videoStatus: String(row.video_status || "pending") as VideoStatus,
     videoUrl: row.video_url ? String(row.video_url) : null,
+    portraitVideoUrl: row.portrait_video_url ? String(row.portrait_video_url) : null,
     subtitleUrl: row.subtitle_url ? String(row.subtitle_url) : null,
+    transcriptText: row.transcript_text ? String(row.transcript_text) : null,
+    licenses: row.licenses_json ? JSON.parse(String(row.licenses_json)) : [],
+    qaReport: row.qa_report_json ? JSON.parse(String(row.qa_report_json)) : null,
+    smeReview: row.sme_review_json ? JSON.parse(String(row.sme_review_json)) : null,
     videoModel: String(row.video_model || "ltx-video"),
     videoError: row.video_error ? String(row.video_error) : null,
     completed: Number(row.completed) === 1,
@@ -436,7 +457,12 @@ export async function updateLesson(
     completed: boolean;
     videoStatus: VideoStatus;
     videoUrl: string | null;
+    portraitVideoUrl: string | null;
     subtitleUrl: string | null;
+    transcriptText: string | null;
+    licenses: unknown[];
+    qaReport: unknown | null;
+    smeReview: unknown | null;
     videoModel: string;
     videoError: string | null;
     videoStoryboard: VideoScene[];
@@ -458,9 +484,29 @@ export async function updateLesson(
     fields.push("video_url = ?");
     args.push(patch.videoUrl);
   }
+  if (patch.portraitVideoUrl !== undefined) {
+    fields.push("portrait_video_url = ?");
+    args.push(patch.portraitVideoUrl);
+  }
   if (patch.subtitleUrl !== undefined) {
     fields.push("subtitle_url = ?");
     args.push(patch.subtitleUrl);
+  }
+  if (patch.transcriptText !== undefined) {
+    fields.push("transcript_text = ?");
+    args.push(patch.transcriptText);
+  }
+  if (patch.licenses !== undefined) {
+    fields.push("licenses_json = ?");
+    args.push(JSON.stringify(patch.licenses));
+  }
+  if (patch.qaReport !== undefined) {
+    fields.push("qa_report_json = ?");
+    args.push(patch.qaReport ? JSON.stringify(patch.qaReport) : null);
+  }
+  if (patch.smeReview !== undefined) {
+    fields.push("sme_review_json = ?");
+    args.push(patch.smeReview ? JSON.stringify(patch.smeReview) : null);
   }
   if (patch.videoModel !== undefined) {
     fields.push("video_model = ?");

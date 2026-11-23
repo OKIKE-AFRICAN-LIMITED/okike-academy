@@ -4,7 +4,8 @@ import { useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
-import type { Course, Lesson, VideoStatus } from "@/lib/types";
+import type { Course, Lesson, SmeReview, VideoStatus } from "@/lib/types";
+import { InstitutionalCompliancePanel } from "@/components/InstitutionalCompliancePanel";
 import {
   ArrowUpRight,
   BookOpen,
@@ -22,6 +23,7 @@ import {
   Loader2,
   Menu,
   Play,
+  ShieldCheck,
   SlidersHorizontal,
   Sparkles,
   Upload,
@@ -97,7 +99,7 @@ export function CoursePlayer({ initialCourse }: CoursePlayerProps) {
   const [activeLessonId, setActiveLessonId] = useState<string>(
     allLessons[0]?.id || ""
   );
-  const [activeTab, setActiveTab] = useState<"lesson" | "quiz" | "tools">(
+  const [activeTab, setActiveTab] = useState<"lesson" | "quiz" | "tools" | "qa">(
     "lesson"
   );
   const [sidebarOpen, setSidebarOpen] = useState(false);
@@ -695,6 +697,23 @@ export function CoursePlayer({ initialCourse }: CoursePlayerProps) {
                 >
                   <SlidersHorizontal className="w-3.5 h-3.5" /> 03 / Video Script
                 </button>
+
+                <button
+                  type="button"
+                  onClick={() => setActiveTab("qa")}
+                  className={`inline-flex items-center gap-2 px-5 py-3.5 text-xs font-mono uppercase tracking-wider font-bold border-b-2 transition-colors ${
+                    activeTab === "qa"
+                      ? "border-[#0e0e0e] bg-[#ffffff] text-[#0e0e0e]"
+                      : "border-transparent text-[#595954] hover:text-[#0e0e0e]"
+                  }`}
+                >
+                  <ShieldCheck className="w-3.5 h-3.5" /> 04 / QA &amp; Governance
+                  {activeLesson.smeReview?.approved && (
+                    <span className="px-1.5 py-0.5 rounded-full bg-[#e3ee32] border border-[#0e0e0e] text-[#0e0e0e] text-[10px]">
+                      ✓
+                    </span>
+                  )}
+                </button>
               </div>
 
               <div className="p-6 sm:p-8">
@@ -1062,6 +1081,16 @@ export function CoursePlayer({ initialCourse }: CoursePlayerProps) {
                       </div>
                     )}
                   </div>
+                )}
+
+                {/* TAB 4: INSTITUTIONAL QA, ACCESSIBILITY & SME SIGN-OFF */}
+                {activeTab === "qa" && (
+                  <InstitutionalCompliancePanel
+                    lesson={activeLesson}
+                    onReviewSaved={(smeReview: SmeReview) =>
+                      patchLessonInState({ ...activeLesson, smeReview })
+                    }
+                  />
                 )}
               </div>
             </div>

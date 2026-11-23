@@ -367,13 +367,35 @@ const ScenePausePredict: React.FC<{ sc: V5SceneSpec; isPortrait: boolean }> = ({
             padding: "24px 32px",
             background: SURFACE,
             border: `2px solid ${LAVENDER}`,
-            fontFamily: MONO_STACK,
-            fontSize: isPortrait ? 32 : 28,
-            color: LAVENDER,
-            fontWeight: 700,
+            display: "flex",
+            flexDirection: "column",
+            gap: 16,
           }}
         >
-          PAUSE &amp; THINK...
+          <div
+            style={{
+              display: "flex",
+              justifyContent: "space-between",
+              fontFamily: MONO_STACK,
+              fontSize: isPortrait ? 28 : 24,
+              color: LAVENDER,
+              fontWeight: 700,
+            }}
+          >
+            <span>PAUSE &amp; PREDICT...</span>
+            <span>
+              {Math.max(1, Math.ceil((revealAt - frame) / fps))}s
+            </span>
+          </div>
+          <div style={{ width: "100%", height: 10, background: BORDER, overflow: "hidden" }}>
+            <div
+              style={{
+                height: "100%",
+                width: `${Math.min(100, (frame / Math.max(1, revealAt)) * 100)}%`,
+                background: LAVENDER,
+              }}
+            />
+          </div>
         </div>
       ) : (
         <div
@@ -399,7 +421,341 @@ const ScenePausePredict: React.FC<{ sc: V5SceneSpec; isPortrait: boolean }> = ({
   );
 };
 
-/* ---------------- SCENE: GENERIC EXPLAINER (PROCESS / COMPARISON / DATA / KEY TERM) ---------------- */
+/* ---------------- SCENE: ANIMATED PROCESS FLOW (CONNECTED NODES) ---------------- */
+const SceneProcessFlow: React.FC<{ sc: V5SceneSpec; isPortrait: boolean }> = ({
+  sc,
+  isPortrait,
+}) => {
+  const frame = useCurrentFrame();
+  const { fps, durationInFrames } = useVideoConfig();
+  const steps = (sc.bullets || []).slice(0, 4);
+  const stepWindow = Math.max(1, Math.floor(durationInFrames / Math.max(1, steps.length)));
+  const activeStep = Math.min(steps.length - 1, Math.floor(frame / stepWindow));
+
+  return (
+    <AbsoluteFill
+      style={{
+        padding: isPortrait ? "140px 52px 245px" : "110px 80px 150px",
+        display: "flex",
+        flexDirection: "column",
+        justifyContent: "center",
+        gap: 36,
+      }}
+    >
+      <div>
+        <div style={{ fontFamily: MONO_STACK, fontSize: 20, color: LIME, fontWeight: 800, letterSpacing: "0.14em" }}>
+          STEP-BY-STEP PROCESS
+        </div>
+        <h2 style={{ fontSize: isPortrait ? 56 : 62, fontWeight: 800, margin: "8px 0 0", letterSpacing: "-0.03em", lineHeight: 1.05 }}>
+          {sc.heading}
+        </h2>
+      </div>
+
+      <div
+        style={{
+          display: "flex",
+          flexDirection: isPortrait ? "column" : "row",
+          alignItems: "stretch",
+          gap: isPortrait ? 18 : 16,
+        }}
+      >
+        {steps.map((raw, idx) => {
+          const s = spring({ frame: frame - idx * 10, fps, config: { damping: 16 } });
+          const isActive = idx <= activeStep;
+          const parts = raw.split(":");
+          const title = parts[0]?.trim() || raw;
+          const detail = parts.length > 1 ? parts.slice(1).join(":").trim() : "";
+
+          return (
+            <React.Fragment key={idx}>
+              <div
+                style={{
+                  flex: 1,
+                  background: isActive ? "#1e1e1b" : SURFACE,
+                  border: `3px solid ${idx === activeStep ? LIME : isActive ? LAVENDER : BORDER}`,
+                  padding: isPortrait ? "22px 24px" : "28px 24px",
+                  display: "flex",
+                  flexDirection: "column",
+                  gap: 14,
+                  opacity: s,
+                  transform: `translateY(${interpolate(s, [0, 1], [22, 0])}px)`,
+                }}
+              >
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                  <span
+                    style={{
+                      fontFamily: MONO_STACK,
+                      fontSize: 22,
+                      fontWeight: 800,
+                      color: idx === activeStep ? INK : PAPER,
+                      background: idx === activeStep ? LIME : BORDER,
+                      padding: "6px 12px",
+                    }}
+                  >
+                    STEP 0{idx + 1}
+                  </span>
+                  {idx < activeStep && (
+                    <span style={{ fontFamily: MONO_STACK, fontSize: 22, color: LIME, fontWeight: 800 }}>✓</span>
+                  )}
+                </div>
+                <div style={{ fontSize: isPortrait ? 32 : 30, fontWeight: 800, color: PAPER, lineHeight: 1.2 }}>
+                  {title}
+                </div>
+                {detail && (
+                  <div style={{ fontSize: isPortrait ? 26 : 23, color: MUTED, lineHeight: 1.35 }}>
+                    {detail}
+                  </div>
+                )}
+              </div>
+              {idx < steps.length - 1 && (
+                <div
+                  style={{
+                    display: "flex",
+                    alignItems: "center",
+                    justifyContent: "center",
+                    fontFamily: MONO_STACK,
+                    fontSize: 32,
+                    fontWeight: 800,
+                    color: idx < activeStep ? LIME : BORDER,
+                    flexShrink: 0,
+                  }}
+                >
+                  {isPortrait ? "↓" : "→"}
+                </div>
+              )}
+            </React.Fragment>
+          );
+        })}
+      </div>
+    </AbsoluteFill>
+  );
+};
+
+/* ---------------- SCENE: BEFORE / AFTER SPLIT COMPARISON ---------------- */
+const SceneBeforeAfter: React.FC<{ sc: V5SceneSpec; isPortrait: boolean }> = ({
+  sc,
+  isPortrait,
+}) => {
+  const frame = useCurrentFrame();
+  const { fps } = useVideoConfig();
+  const items = (sc.bullets || []).slice(0, 4);
+  const mid = Math.max(1, Math.ceil(items.length / 2));
+  const wrongItems = items.slice(0, mid);
+  const rightItems = items.slice(mid);
+  const sWrong = spring({ frame: frame - 4, fps, config: { damping: 16 } });
+  const sRight = spring({ frame: frame - 22, fps, config: { damping: 16 } });
+
+  return (
+    <AbsoluteFill
+      style={{
+        padding: isPortrait ? "140px 52px 245px" : "110px 80px 150px",
+        display: "flex",
+        flexDirection: "column",
+        justifyContent: "center",
+        gap: 32,
+      }}
+    >
+      <div>
+        <div style={{ fontFamily: MONO_STACK, fontSize: 20, color: LAVENDER, fontWeight: 800, letterSpacing: "0.14em" }}>
+          CONTRAST &amp; CORRECTION
+        </div>
+        <h2 style={{ fontSize: isPortrait ? 56 : 62, fontWeight: 800, margin: "8px 0 0", letterSpacing: "-0.03em", lineHeight: 1.05 }}>
+          {sc.heading}
+        </h2>
+      </div>
+
+      <div style={{ display: "flex", flexDirection: isPortrait ? "column" : "row", gap: 32, flex: isPortrait ? undefined : 1 }}>
+        <div
+          style={{
+            flex: 1,
+            background: "#1c1315",
+            border: `3px solid ${DANGER}`,
+            padding: "32px 30px",
+            display: "flex",
+            flexDirection: "column",
+            gap: 20,
+            opacity: sWrong,
+            transform: `translateX(${interpolate(sWrong, [0, 1], [-24, 0])}px)`,
+          }}
+        >
+          <div style={{ fontFamily: MONO_STACK, fontSize: 22, fontWeight: 800, color: DANGER, letterSpacing: "0.12em" }}>
+            ✕ COMMON MISTAKE
+          </div>
+          {wrongItems.map((item, i) => (
+            <div key={i} style={{ fontSize: isPortrait ? 32 : 31, fontWeight: 700, color: PAPER, lineHeight: 1.3, paddingLeft: 16, borderLeft: `4px solid ${DANGER}` }}>
+              {item}
+            </div>
+          ))}
+        </div>
+
+        <div
+          style={{
+            flex: 1,
+            background: "#171a12",
+            border: `3px solid ${LIME}`,
+            padding: "32px 30px",
+            display: "flex",
+            flexDirection: "column",
+            gap: 20,
+            opacity: sRight,
+            transform: `translateX(${interpolate(sRight, [0, 1], [24, 0])}px)`,
+          }}
+        >
+          <div style={{ fontFamily: MONO_STACK, fontSize: 22, fontWeight: 800, color: LIME, letterSpacing: "0.12em" }}>
+            ✓ BEST PRACTICE
+          </div>
+          {(rightItems.length > 0 ? rightItems : ["Apply structured, verifiable methodology."]).map((item, i) => (
+            <div key={i} style={{ fontSize: isPortrait ? 32 : 31, fontWeight: 700, color: PAPER, lineHeight: 1.3, paddingLeft: 16, borderLeft: `4px solid ${LIME}` }}>
+              {item}
+            </div>
+          ))}
+        </div>
+      </div>
+    </AbsoluteFill>
+  );
+};
+
+/* ---------------- SCENE: LIVE CODE & RENDERED PREVIEW ---------------- */
+const SceneLiveCodePreview: React.FC<{ sc: V5SceneSpec; isPortrait: boolean }> = ({
+  sc,
+  isPortrait,
+}) => {
+  const frame = useCurrentFrame();
+  const { durationInFrames } = useVideoConfig();
+  const code = sc.codeSnippet || "<!-- Example -->";
+  const visibleChars = Math.floor(
+    interpolate(frame, [6, Math.max(24, durationInFrames * 0.65)], [0, code.length], {
+      extrapolateLeft: "clamp",
+      extrapolateRight: "clamp",
+    })
+  );
+  const typedCode = code.slice(0, visibleChars);
+  const previewImg = sc.resolvedAssets?.code_output;
+
+  return (
+    <AbsoluteFill
+      style={{
+        padding: isPortrait ? "140px 48px 245px" : "105px 76px 145px",
+        display: "flex",
+        flexDirection: "column",
+        gap: 28,
+      }}
+    >
+      <div>
+        <div style={{ fontFamily: MONO_STACK, fontSize: 20, color: LIME, fontWeight: 800, letterSpacing: "0.14em" }}>
+          LIVE CODE &amp; OUTPUT
+        </div>
+        <h2 style={{ fontSize: isPortrait ? 52 : 56, fontWeight: 800, margin: "6px 0 0", letterSpacing: "-0.03em" }}>
+          {sc.heading}
+        </h2>
+      </div>
+
+      <div style={{ flex: 1, display: "flex", flexDirection: isPortrait ? "column" : "row", gap: 28 }}>
+        <div style={{ flex: 1.15, background: "#121210", border: `2px solid ${BORDER}`, display: "flex", flexDirection: "column", overflow: "hidden" }}>
+          <div style={{ padding: "12px 20px", borderBottom: `1px solid ${BORDER}`, display: "flex", alignItems: "center", gap: 10, background: SURFACE }}>
+            <span style={{ width: 12, height: 12, borderRadius: 99, background: DANGER }} />
+            <span style={{ width: 12, height: 12, borderRadius: 99, background: LIME }} />
+            <span style={{ width: 12, height: 12, borderRadius: 99, background: LAVENDER }} />
+            <span style={{ fontFamily: MONO_STACK, fontSize: 16, color: MUTED, marginLeft: 10 }}>editor.code</span>
+          </div>
+          <pre
+            style={{
+              margin: 0,
+              padding: "24px 28px",
+              fontFamily: MONO_STACK,
+              fontSize: isPortrait ? 24 : 26,
+              lineHeight: 1.55,
+              color: LIME,
+              whiteSpace: "pre-wrap",
+              wordBreak: "break-word",
+            }}
+          >
+            {typedCode}
+            <span style={{ background: LIME, color: INK }}> </span>
+          </pre>
+        </div>
+
+        {previewImg && (
+          <div style={{ flex: 0.85, display: "flex", flexDirection: "column", border: `2px solid ${LIME}`, background: "#fff", overflow: "hidden" }}>
+            <div style={{ padding: "10px 18px", background: LIME, color: INK, fontFamily: MONO_STACK, fontSize: 16, fontWeight: 800 }}>
+              ● RENDERED PREVIEW
+            </div>
+            <Img src={staticFile(previewImg)} style={{ width: "100%", height: "100%", objectFit: "contain" }} />
+          </div>
+        )}
+      </div>
+    </AbsoluteFill>
+  );
+};
+
+/* ---------------- SCENE: KEY TERM CALLOUT (EDITORIAL GLOSSARY) ---------------- */
+const SceneKeyTermCallout: React.FC<{ sc: V5SceneSpec; isPortrait: boolean }> = ({
+  sc,
+  isPortrait,
+}) => {
+  const frame = useCurrentFrame();
+  const { fps } = useVideoConfig();
+  const sCard = spring({ frame: frame - 4, fps, config: { damping: 16 } });
+  const sEx = spring({ frame: frame - 20, fps, config: { damping: 16 } });
+  const definition = (sc.bullets && sc.bullets[0]) || sc.subtitle || "";
+  const example = (sc.bullets && sc.bullets[1]) || "";
+
+  return (
+    <AbsoluteFill
+      style={{
+        padding: isPortrait ? "160px 56px 250px" : "120px 110px 155px",
+        display: "flex",
+        flexDirection: "column",
+        justifyContent: "center",
+        gap: 32,
+      }}
+    >
+      <div
+        style={{
+          background: SURFACE,
+          border: `3px solid ${BORDER}`,
+          borderTop: `8px solid ${LIME}`,
+          padding: isPortrait ? "40px 36px" : "48px 52px",
+          opacity: sCard,
+          transform: `translateY(${interpolate(sCard, [0, 1], [24, 0])}px)`,
+        }}
+      >
+        <div style={{ fontFamily: MONO_STACK, fontSize: 20, color: LIME, fontWeight: 800, letterSpacing: "0.16em", marginBottom: 14 }}>
+          KEY CONCEPT
+        </div>
+        <h2 style={{ fontSize: isPortrait ? 64 : 74, fontWeight: 800, margin: 0, letterSpacing: "-0.03em", lineHeight: 1.02, color: PAPER }}>
+          {sc.heading}
+        </h2>
+        {definition && (
+          <p style={{ fontSize: isPortrait ? 36 : 36, color: "#e5e5df", marginTop: 24, marginBottom: 0, lineHeight: 1.38, fontWeight: 500 }}>
+            {definition}
+          </p>
+        )}
+      </div>
+
+      {example && (
+        <div
+          style={{
+            background: "#17171d",
+            borderLeft: `6px solid ${LAVENDER}`,
+            padding: "24px 32px",
+            opacity: sEx,
+            transform: `translateY(${interpolate(sEx, [0, 1], [18, 0])}px)`,
+          }}
+        >
+          <div style={{ fontFamily: MONO_STACK, fontSize: 18, color: LAVENDER, fontWeight: 800, letterSpacing: "0.14em", marginBottom: 8 }}>
+            IN PRACTICE
+          </div>
+          <div style={{ fontSize: isPortrait ? 32 : 30, color: PAPER, fontWeight: 600, lineHeight: 1.35 }}>
+            {example.replace(/^Example:\s*/i, "")}
+          </div>
+        </div>
+      )}
+    </AbsoluteFill>
+  );
+};
+
+/* ---------------- SCENE: GENERIC EXPLAINER (FALLBACK / SOURCED DATA) ---------------- */
 const SceneExplainerCard: React.FC<{ sc: V5SceneSpec; isPortrait: boolean }> = ({
   sc,
   isPortrait,
@@ -719,17 +1075,71 @@ export const OkikeLessonVideo: React.FC<OkikeV5Props> = (props) => {
   const isPortrait = height > width;
   const progressPct = Math.min(100, (frame / Math.max(1, durationInFrames - 1)) * 100);
 
+  const totalScenes = props.scenes.length;
+  let currentSceneIdx = 0;
+  let accFrames = 0;
+  for (let i = 0; i < totalScenes; i++) {
+    const d = Math.max(45, props.scenes[i].durationInFrames);
+    if (frame >= accFrames && frame < accFrames + d) {
+      currentSceneIdx = i;
+      break;
+    }
+    accFrames += d;
+    if (i === totalScenes - 1) currentSceneIdx = i;
+  }
+  const activeTemplateLabel = (props.scenes[currentSceneIdx]?.template || "lesson")
+    .replace(/_/g, " ")
+    .toUpperCase();
+
   return (
     <AbsoluteFill style={{ backgroundColor: INK, color: PAPER, fontFamily: FONT_STACK, overflow: "hidden" }}>
       <style>{`@import url('https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:wght@500;700;800&display=swap');`}</style>
 
-      {/* Top Brand Header */}
+      {/* Subtle Swiss Architectural Grid + Calm Ambient Glow (Zero Flashing / WCAG Safe) */}
+      <div
+        style={{
+          position: "absolute",
+          inset: 0,
+          backgroundImage:
+            "linear-gradient(rgba(255,255,255,0.03) 1px, transparent 1px), linear-gradient(90deg, rgba(255,255,255,0.03) 1px, transparent 1px)",
+          backgroundSize: "72px 72px",
+          pointerEvents: "none",
+        }}
+      />
+      <div
+        style={{
+          position: "absolute",
+          top: -220,
+          right: -180,
+          width: 720,
+          height: 720,
+          borderRadius: "50%",
+          background: "radial-gradient(circle, rgba(227,238,50,0.06) 0%, rgba(14,14,14,0) 70%)",
+          pointerEvents: "none",
+        }}
+      />
+
+      {/* Top Broadcast Header with Live Chapter Indicator */}
       <div style={{ position: "absolute", top: isPortrait ? 44 : 30, left: isPortrait ? 48 : 64, right: isPortrait ? 48 : 64, display: "flex", justifyContent: "space-between", alignItems: "center", zIndex: 70 }}>
         <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
           <div style={{ width: 14, height: 14, backgroundColor: LIME }} />
-          <span style={{ fontFamily: MONO_STACK, fontSize: isPortrait ? 22 : 18, letterSpacing: "0.18em", color: MUTED, fontWeight: 700 }}>
-            {props.courseTitle}
+          <span style={{ fontFamily: MONO_STACK, fontSize: isPortrait ? 20 : 18, letterSpacing: "0.18em", color: MUTED, fontWeight: 700 }}>
+            OKIKE ACADEMY · {props.courseTitle}
           </span>
+        </div>
+        <div
+          style={{
+            fontFamily: MONO_STACK,
+            fontSize: isPortrait ? 18 : 16,
+            fontWeight: 700,
+            letterSpacing: "0.12em",
+            color: PAPER,
+            background: "rgba(25,25,23,0.9)",
+            border: `1px solid ${BORDER}`,
+            padding: "6px 14px",
+          }}
+        >
+          {String(currentSceneIdx + 1).padStart(2, "0")} / {String(totalScenes).padStart(2, "0")} · {activeTemplateLabel}
         </div>
       </div>
 
@@ -744,6 +1154,14 @@ export const OkikeLessonVideo: React.FC<OkikeV5Props> = (props) => {
             body = <SceneUIMockup sc={sc} isPortrait={isPortrait} />;
           } else if (sc.resolvedAssets?.illustration) {
             body = <SceneEditorialIllustration sc={sc} isPortrait={isPortrait} />;
+          } else if (sc.template === "process_flow") {
+            body = <SceneProcessFlow sc={sc} isPortrait={isPortrait} />;
+          } else if (sc.template === "before_after" || sc.template === "comparison_split") {
+            body = <SceneBeforeAfter sc={sc} isPortrait={isPortrait} />;
+          } else if (sc.template === "live_code_preview" || sc.template === "code_demo") {
+            body = <SceneLiveCodePreview sc={sc} isPortrait={isPortrait} />;
+          } else if (sc.template === "key_term_callout") {
+            body = <SceneKeyTermCallout sc={sc} isPortrait={isPortrait} />;
           } else if (sc.template === "pause_and_predict") {
             body = <ScenePausePredict sc={sc} isPortrait={isPortrait} />;
           } else if (sc.template === "recap_scene" || sc.template === "host_recap" || sc.template === "takeaways") {
