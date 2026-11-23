@@ -22,6 +22,32 @@ export async function POST(
       return NextResponse.json({ error: "Lesson not found" }, { status: 404 });
     }
 
+    const contentType = request.headers.get("content-type") || "";
+    if (contentType.includes("application/json")) {
+      const body = await request.json();
+      const videoUrl = String(body.videoUrl || "").trim();
+      if (!videoUrl) {
+        return NextResponse.json(
+          { error: "Missing 'videoUrl' in JSON body" },
+          { status: 400 }
+        );
+      }
+      const subtitleUrl = body.subtitleUrl
+        ? String(body.subtitleUrl).trim()
+        : null;
+      const updated = await updateLesson(lessonId, {
+        videoUrl,
+        subtitleUrl,
+        videoStatus: "ready",
+        videoError: null,
+      });
+      return NextResponse.json({
+        ok: true,
+        videoUrl: updated?.videoUrl,
+        subtitleUrl: updated?.subtitleUrl,
+      });
+    }
+
     const formData = await request.formData();
     const videoFile = formData.get("video");
     const subtitleFile = formData.get("subtitles");

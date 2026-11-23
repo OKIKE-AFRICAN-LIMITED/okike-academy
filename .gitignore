@@ -41,6 +41,8 @@ academy.db*
 /public/videos/*.vtt
 /worker/.cache/
 /worker/mascots/Character_*
+**/__pycache__/
+*.pyc
 
 # vercel
 .vercel

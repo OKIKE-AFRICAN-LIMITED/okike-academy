@@ -18,6 +18,14 @@ from .schemas import CriticScores, validate_lesson_plan, validate_scene_deck
 PROMPTS_DIR = Path(__file__).resolve().parent / "prompts"
 
 
+def _fill_template(template: str, mapping: dict[str, Any]) -> str:
+    """Safely substitute named placeholders without tripping on literal JSON braces."""
+    out = template
+    for key, value in mapping.items():
+        out = out.replace("{" + key + "}", str(value))
+    return out
+
+
 def run_stage1_planner(
     course_title: str,
     module_title: str,
@@ -28,12 +36,15 @@ def run_stage1_planner(
     prior_plan: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     template = (PROMPTS_DIR / "stage1_planner.txt").read_text(encoding="utf-8")
-    prompt = template.format(
-        course_title=course_title,
-        module_title=module_title,
-        lesson_title=lesson_title,
-        level=level,
-        language=language,
+    prompt = _fill_template(
+        template,
+        {
+            "course_title": course_title,
+            "module_title": module_title,
+            "lesson_title": lesson_title,
+            "level": level,
+            "language": language,
+        },
     )
     if revision_feedback and prior_plan:
         prompt += (
@@ -60,9 +71,12 @@ def run_stage2_critic(
     previous_sequences: list[list[str]] | None = None,
 ) -> CriticScores:
     template = (PROMPTS_DIR / "stage2_critic.txt").read_text(encoding="utf-8")
-    prompt = template.format(
-        previous_sequences=json.dumps(previous_sequences or [], indent=2),
-        plan_json=json.dumps(plan, indent=2),
+    prompt = _fill_template(
+        template,
+        {
+            "previous_sequences": json.dumps(previous_sequences or [], indent=2),
+            "plan_json": json.dumps(plan, indent=2),
+        },
     )
     raw = call_gemini_json(prompt, temperature=0.2)
     return CriticScores(
@@ -130,10 +144,13 @@ def run_stage3_director(
     max_attempts: int = 2,
 ) -> list[dict[str, Any]]:
     template = (PROMPTS_DIR / "stage3_director.txt").read_text(encoding="utf-8")
-    base_prompt = template.format(
-        plan_json=json.dumps(plan, indent=2),
-        previous_sequences=json.dumps(previous_sequences or [], indent=2),
-        target_duration=plan.get("target_duration_seconds", 160),
+    base_prompt = _fill_template(
+        template,
+        {
+            "plan_json": json.dumps(plan, indent=2),
+            "previous_sequences": json.dumps(previous_sequences or [], indent=2),
+            "target_duration": plan.get("target_duration_seconds", 160),
+        },
     )
 
     last_errors: list[str] = []

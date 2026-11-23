@@ -16,6 +16,7 @@ ever repeat the same scene sequence.
 """
 
 import argparse
+import hashlib
 import json
 import os
 import shutil
@@ -34,6 +35,39 @@ from pipeline.stage7_qa import run_stage7_qa_gate
 from pipeline.stages_1_to_3 import plan_with_critic_loop, run_stage3_director
 
 FPS = 30
+
+
+def upload_direct_to_cloudinary(file_path: Path, public_id: str, is_video: bool) -> str | None:
+    cloud = os.environ.get("CLOUDINARY_CLOUD_NAME", "").strip()
+    api_key = os.environ.get("CLOUDINARY_API_KEY", "").strip()
+    api_secret = os.environ.get("CLOUDINARY_API_SECRET", "").strip()
+    if not (cloud and api_key and api_secret):
+        return None
+
+    resource_type = "video" if is_video else "raw"
+    folder = "okike-academy"
+    timestamp = str(int(time.time()))
+    to_sign = f"folder={folder}&overwrite=true&public_id={public_id}&timestamp={timestamp}{api_secret}"
+    sig = hashlib.sha1(to_sign.encode("utf-8")).hexdigest()
+
+    with file_path.open("rb") as fh:
+        resp = requests.post(
+            f"https://api.cloudinary.com/v1_1/{cloud}/{resource_type}/upload",
+            data={
+                "api_key": api_key,
+                "timestamp": timestamp,
+                "folder": folder,
+                "public_id": public_id,
+                "overwrite": "true",
+                "signature": sig,
+            },
+            files={"file": (file_path.name, fh)},
+            timeout=300,
+        )
+    data = resp.json()
+    if not resp.ok or not data.get("secure_url"):
+        raise RuntimeError(f"Direct Cloudinary upload failed: {data}")
+    return str(data["secure_url"])
 
 
 def lipsync_clip(
@@ -306,17 +340,29 @@ def main() -> None:
                         job, remotion_dir, latentsync_dir, host_female, host_male,
                         work_root, course_sequences, mp4, vtt, render_portrait=args.portrait,
                     )
-                    with mp4.open("rb") as vf, vtt.open("rb") as sf:
+                    # Upload directly to Cloudinary to bypass Vercel's 4.5MB serverless body limit!
+                    cloud_video_url = upload_direct_to_cloudinary(mp4, lesson_id, is_video=True)
+                    if cloud_video_url:
+                        cloud_vtt_url = upload_direct_to_cloudinary(vtt, f"{lesson_id}_vtt", is_video=False)
                         up = requests.post(
                             f"{base}/api/worker/jobs/{lesson_id}/upload",
                             headers=headers,
-                            files={
-                                "video": (f"{lesson_id}.mp4", vf, "video/mp4"),
-                                "subtitles": (f"{lesson_id}.vtt", sf, "text/vtt"),
-                            },
-                            timeout=240,
+                            json={"videoUrl": cloud_video_url, "subtitleUrl": cloud_vtt_url},
+                            timeout=30,
                         )
                         up.raise_for_status()
+                    else:
+                        with mp4.open("rb") as vf, vtt.open("rb") as sf:
+                            up = requests.post(
+                                f"{base}/api/worker/jobs/{lesson_id}/upload",
+                                headers=headers,
+                                files={
+                                    "video": (f"{lesson_id}.mp4", vf, "video/mp4"),
+                                    "subtitles": (f"{lesson_id}.vtt", sf, "text/vtt"),
+                                },
+                                timeout=240,
+                            )
+                            up.raise_for_status()
                 print(f"[Institutional] Published QA-passed 1080p video for: {title}")
             except Exception as exc:
                 print(f"[Institutional] Failed {lesson_id}: {exc}")
