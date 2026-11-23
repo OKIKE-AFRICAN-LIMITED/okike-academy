@@ -22,10 +22,10 @@ from typing import Any
 from .schemas import AssetRecord, content_hash, to_dict
 
 OKIKE_STYLE_PREFIX = (
-    "Editorial educational illustration for an international academy, clean modern vector-shaded artwork, "
-    "rich dark charcoal studio background, subtle warm lime and soft lavender accent lighting, "
-    "dramatic studio lighting, crisp focal subject authentic to the topic, diverse inclusive people when people appear, "
-    "magazine cover quality, strictly NO text, NO letters, NO numbers, NO watermarks: "
+    "Cinematic documentary film still, shot on ARRI Alexa 35mm lens, shallow depth of field, "
+    "natural realistic studio and architectural lighting, crisp photorealistic details, "
+    "BBC and Netflix MasterClass production quality, authentic diverse people and real-world environments, "
+    "strictly NO text, NO letters, NO numbers, NO subtitles, NO watermarks: "
 )
 
 _IMAGE_PIPE: Any = None
@@ -34,7 +34,7 @@ _VIDEO_PIPE: Any = None
 
 
 def _unload_video_pipeline() -> None:
-    """Frees GPU VRAM after Wan2.2-TI2V-5B finishes so LatentSync has full headroom."""
+    """Frees GPU VRAM after Wan2.2 finishes so LatentSync has full headroom."""
     global _VIDEO_PIPE
     if _VIDEO_PIPE is None:
         return
@@ -55,7 +55,11 @@ def _animate_illustration_with_wan(
     subject_prompt: str,
     out_mp4: Path,
 ) -> bool:
-    """Animates a crisp FLUX illustration into a smooth looping MP4 via Wan2.2-TI2V-5B."""
+    """
+    Animates a crisp FLUX film still into a smooth looping MP4 via Wan2.2:
+      - >= 40 GB VRAM (G4 96GB / A100 80GB): Wan-AI/Wan2.2-I2V-A14B-Diffusers (27B MoE flagship, 720p!)
+      - 18-39 GB VRAM (L4 22.5GB):           Wan-AI/Wan2.2-TI2V-5B-Diffusers (5B, 480p)
+    """
     global _VIDEO_PIPE
     enabled = os.environ.get("OKIKE_ANIMATE_ILLUSTRATIONS", "1").strip().lower()
     if enabled in ("0", "false", "off", "none"):
@@ -74,40 +78,59 @@ def _animate_illustration_with_wan(
         from diffusers import AutoencoderKLWan, WanImageToVideoPipeline
         from diffusers.utils import export_to_video, load_image
 
-        model_id = os.environ.get(
-            "OKIKE_VIDEO_MODEL", "Wan-AI/Wan2.2-TI2V-5B-Diffusers"
-        ).strip()
+        hf_token = os.environ.get("HF_TOKEN", "").strip() or None
+        is_monster_gpu = vram_gb >= 40.0
+        default_model = (
+            "Wan-AI/Wan2.2-I2V-A14B-Diffusers"
+            if is_monster_gpu
+            else "Wan-AI/Wan2.2-TI2V-5B-Diffusers"
+        )
+        model_id = os.environ.get("OKIKE_VIDEO_MODEL", default_model).strip() or default_model
+        is_a14b = "a14b" in model_id.lower()
 
         if _VIDEO_PIPE is None:
-            print(f"[Stage 4 Assets] Loading {model_id} (bfloat16 + CPU offload)...")
+            print(f"[Stage 4 Assets] Loading {model_id} on {vram_gb:.0f}GB GPU (bfloat16)...")
             vae = AutoencoderKLWan.from_pretrained(
-                model_id, subfolder="vae", torch_dtype=torch.float32
+                model_id, subfolder="vae", torch_dtype=torch.float32, token=hf_token
             )
             pipe = WanImageToVideoPipeline.from_pretrained(
-                model_id, vae=vae, torch_dtype=torch.bfloat16
+                model_id, vae=vae, torch_dtype=torch.bfloat16, token=hf_token
             )
-            pipe.enable_model_cpu_offload()
+            if vram_gb >= 80.0:
+                pipe.to("cuda")
+            else:
+                pipe.enable_model_cpu_offload()
             _VIDEO_PIPE = pipe
 
-        img = load_image(str(image_png)).resize((832, 480))
+        vid_w, vid_h = (1280, 720) if is_a14b else (832, 480)
+        steps = 36 if is_a14b else 24
+        num_frames = 81 if is_a14b else 65
+        fps = 16 if is_a14b else 24
+
+        img = load_image(str(image_png)).resize((vid_w, vid_h))
         motion_prompt = (
-            f"Smooth subtle cinematic editorial motion, gentle camera drift, crisp animated details, "
-            f"no text, no distortion: {subject_prompt.strip()}"
+            f"Smooth cinematic documentary camera motion, natural realistic human and environmental movement, "
+            f"steady 35mm cinema lens, crisp focus, high production value, no text, no distortion: "
+            f"{subject_prompt.strip()}"
         )
-        out = _VIDEO_PIPE(
-            image=img,
-            prompt=motion_prompt,
-            negative_prompt="blurry, distorted, morphing text, flicker, watermark, low quality",
-            height=480,
-            width=832,
-            num_frames=65,
-            num_inference_steps=20,
-            guidance_scale=5.0,
-        )
+        kwargs: dict[str, Any] = {
+            "image": img,
+            "prompt": motion_prompt,
+            "negative_prompt": "blurry, distorted faces, extra fingers, morphing text, flicker, cartoon, watermark, low quality",
+            "height": vid_h,
+            "width": vid_w,
+            "num_frames": num_frames,
+            "num_inference_steps": steps,
+            "guidance_scale": 3.5 if is_a14b else 5.0,
+        }
+        if is_a14b:
+            kwargs["guidance_scale_2"] = 3.5
+
+        out = _VIDEO_PIPE(**kwargs)
         frames = out.frames[0]
         raw_mp4 = out_mp4.with_name(out_mp4.stem + "_raw.mp4")
         pp_mp4 = out_mp4.with_name(out_mp4.stem + "_pp.mp4")
-        export_to_video(frames, str(raw_mp4), fps=24)
+        export_to_video(frames, str(raw_mp4), fps=fps)
         # Create a seamless ping-pong loop (~24s) with zero RAM bloat (-stream_loop copies packets in 0.05s)
         import subprocess
         pp_cmd = [
@@ -131,7 +154,7 @@ def _animate_illustration_with_wan(
             raw_mp4.unlink(missing_ok=True)
         else:
             raw_mp4.replace(out_mp4)
-        print(f"[Stage 4 Assets] Animated illustration ({model_id}): {out_mp4.name}")
+        print(f"[Stage 4 Assets] Animated illustration ({model_id}, {vid_w}x{vid_h}): {out_mp4.name}")
         return out_mp4.exists()
     except Exception as exc:
         print(f"[Stage 4 Assets] Wan2.2 animation skipped ({exc}); using crisp PNG fallback.")
@@ -139,7 +162,7 @@ def _animate_illustration_with_wan(
 
 
 def _load_image_pipeline() -> tuple[Any, str]:
-    """Lazily loads FLUX.1-schnell (default) or SDXL-Turbo on GPU for bespoke illustrations."""
+    """Lazily loads FLUX.1-dev / FLUX.1-schnell (explicit HF_TOKEN) or SDXL-Turbo fallback."""
     global _IMAGE_PIPE, _IMAGE_MODEL_USED
     if _IMAGE_PIPE is not None:
         return _IMAGE_PIPE, _IMAGE_MODEL_USED
@@ -154,21 +177,34 @@ def _load_image_pipeline() -> tuple[Any, str]:
         print("[Stage 4 Assets] No CUDA GPU detected; skipping diffusion illustration generation.")
         return None, ""
 
-    if choice in ("flux", "flux-schnell", "black-forest-labs/flux.1-schnell"):
+    hf_token = os.environ.get("HF_TOKEN", "").strip() or None
+    vram_gb = torch.cuda.get_device_properties(0).total_memory / (1024**3)
+
+    flux_candidates: list[str] = []
+    if choice in ("flux-dev", "black-forest-labs/flux.1-dev"):
+        flux_candidates = ["black-forest-labs/FLUX.1-dev", "black-forest-labs/FLUX.1-schnell"]
+    elif choice in ("flux", "flux-schnell", "black-forest-labs/flux.1-schnell"):
+        flux_candidates = ["black-forest-labs/FLUX.1-schnell"]
+
+    for repo_id in flux_candidates:
         try:
             from diffusers import FluxPipeline
 
-            print("[Stage 4 Assets] Loading black-forest-labs/FLUX.1-schnell (bfloat16 + CPU offload)...")
+            print(f"[Stage 4 Assets] Loading {repo_id} on {vram_gb:.0f}GB GPU (bfloat16)...")
             pipe = FluxPipeline.from_pretrained(
-                "black-forest-labs/FLUX.1-schnell",
+                repo_id,
                 torch_dtype=torch.bfloat16,
+                token=hf_token,
             )
-            pipe.enable_model_cpu_offload()
+            if vram_gb >= 40.0:
+                pipe.to("cuda")
+            else:
+                pipe.enable_model_cpu_offload()
             _IMAGE_PIPE = pipe
-            _IMAGE_MODEL_USED = "black-forest-labs/FLUX.1-schnell"
+            _IMAGE_MODEL_USED = repo_id
             return _IMAGE_PIPE, _IMAGE_MODEL_USED
         except Exception as exc:
-            print(f"[Stage 4 Assets] FLUX.1-schnell load failed ({exc}); falling back to SDXL-Turbo...")
+            print(f"[Stage 4 Assets] {repo_id} load failed ({exc}); trying next model...")
 
     try:
         from diffusers import AutoPipelineForText2Image
@@ -223,12 +259,13 @@ def _generate_editorial_illustration(
         gen = torch.Generator(device="cpu").manual_seed(seed)
 
         if "FLUX" in model_name.upper():
+            is_dev = "DEV" in model_name.upper()
             result = pipe(
                 prompt=full_prompt,
-                width=1024,
-                height=576,
-                num_inference_steps=4,
-                guidance_scale=0.0,
+                width=1280,
+                height=720,
+                num_inference_steps=24 if is_dev else 4,
+                guidance_scale=3.5 if is_dev else 0.0,
                 max_sequence_length=256,
                 generator=gen,
             )
