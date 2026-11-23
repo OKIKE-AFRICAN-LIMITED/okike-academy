@@ -22,10 +22,10 @@ from typing import Any
 from .schemas import AssetRecord, content_hash, to_dict
 
 OKIKE_STYLE_PREFIX = (
-    "Editorial technology illustration, clean modern isometric vector-shaded artwork, "
-    "deep obsidian charcoal background, subtle electric acid-lime and soft lavender rim lighting, "
-    "dramatic studio lighting, crisp geometric details, high contrast, magazine cover quality, "
-    "strictly NO text, NO letters, NO numbers, NO watermarks, NO UI screenshots: "
+    "Editorial educational illustration for an international academy, clean modern vector-shaded artwork, "
+    "rich dark charcoal studio background, subtle warm lime and soft lavender accent lighting, "
+    "dramatic studio lighting, crisp focal subject authentic to the topic, diverse inclusive people when people appear, "
+    "magazine cover quality, strictly NO text, NO letters, NO numbers, NO watermarks: "
 )
 
 _IMAGE_PIPE: Any = None
