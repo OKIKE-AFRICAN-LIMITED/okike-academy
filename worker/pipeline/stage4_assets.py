@@ -104,9 +104,12 @@ def _animate_illustration_with_wan(
                 pipe.enable_model_cpu_offload()
             _VIDEO_PIPE = pipe
 
-        vid_w, vid_h = (1280, 720) if is_a14b else (832, 480)
-        steps = 36 if is_a14b else 24
-        num_frames = 81 if is_a14b else 65
+        # 832x480 x 49 frames x 20 steps keeps Wan2.2-I2V-A14B 27B MoE crisp (~3 min/clip)
+        # instead of quadratic 720p slowdown (~42 min/clip); override via OKIKE_WAN_RES=720p if desired.
+        high_res = os.environ.get("OKIKE_WAN_RES", "480p").strip().lower() == "720p"
+        vid_w, vid_h = (1280, 720) if (is_a14b and high_res) else (832, 480)
+        steps = 28 if (is_a14b and high_res) else 20
+        num_frames = 65 if (is_a14b and high_res) else 49
         fps = 16 if is_a14b else 24
 
         img = load_image(str(image_png)).resize((vid_w, vid_h))
