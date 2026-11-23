@@ -1,86 +1,39 @@
 #!/usr/bin/env python3
 """
-Okike Studio Explainer Engine v5 (Auto-Sync Colab Worker)
-=========================================================
-- Per-scene Kokoro-82M studio voiceover (exact audio-to-visual sync, zero drift)
-- Dual Okike 3D Hosts:
-    * okike-v5-female -> host_1.mp4 + af_heart (Amara)
-    * okike-v5-male   -> host_2.mp4 + am_michael (Tunde)
-- Fast ByteDance LatentSync (--inference_steps 10) ONLY on intro & recap host clips (~4x faster!)
-- Whisper word-level timestamps for millisecond-accurate kinetic captions + .vtt subtitles
-- Subtle procedural transition whoosh SFX + warm studio ambient bed
-- Remotion v5 TransitionSeries (smooth slide/fade transitions + 8 modular explainer templates)
+Okike Studio Institutional Auto-Sync Colab Worker (All Courses)
+===============================================================
+Automatically pulls queued lessons from https://academy.okikeenterprises.com
+and runs the full 7-Stage Institutional Pipeline for EVERY course:
+  1. Stage 1 (Lesson Planner) + Stage 2 (Plan Critic, max 2 revision loops)
+  2. Stage 3 (Scene Director + Hard Variety/Accuracy Validators)
+  3. Stage 4 (Real HTML/CSS UI Mockups / Code Previews + licenses.json)
+  4. Stage 5 (Kokoro-82M + Pronunciation Dict + -16 LUFS + VTT/SRT/Transcript)
+  5. Stage 6 (1080p Non-Overlapping Remotion Render + Fast 10-Step LatentSync)
+  6. Stage 7 (Automated QA Gate -> Auto-Upload to Cloudinary via Okike Academy API)
+
+Tracks previous scene sequences per course so NO two lessons in any course
+ever repeat the same scene sequence.
 """
 
 import argparse
 import json
 import os
+import shutil
 import subprocess
 import tempfile
 import time
 from pathlib import Path
 from typing import Any
 
-import numpy as np
 import requests
-import soundfile as sf
 from kokoro_onnx import Kokoro
 
+from pipeline.stage4_assets import run_stage4_assets
+from pipeline.stage5_narration import run_stage5_narration
+from pipeline.stage7_qa import run_stage7_qa_gate
+from pipeline.stages_1_to_3 import plan_with_critic_loop, run_stage3_director
+
 FPS = 30
-TRANSITION_FRAMES = 12
-
-
-def format_vtt_ts(seconds: float) -> str:
-    hrs = int(seconds // 3600)
-    mins = int((seconds % 3600) // 60)
-    secs = seconds % 60
-    return f"{hrs:02d}:{mins:02d}:{secs:06.3f}"
-
-
-def make_whoosh(sr: int, dur: float = 0.22) -> np.ndarray:
-    n = int(sr * dur)
-    t = np.linspace(0, dur, n, endpoint=False)
-    noise = np.random.default_rng(7).normal(0, 1, n)
-    env = np.sin(np.pi * t / dur) ** 2
-    # Simple low-pass smoothing for a soft studio whoosh
-    kernel = np.ones(18) / 18.0
-    smooth = np.convolve(noise, kernel, mode="same")
-    return (smooth * env * 0.12).astype(np.float32)
-
-
-def extract_whisper_words(wav_path: Path, fallback_text: str, total_dur: float) -> list[dict[str, Any]]:
-    try:
-        import whisper
-
-        model = whisper.load_model("tiny")
-        result = model.transcribe(str(wav_path), word_timestamps=True, language="en")
-        words = []
-        for seg in result.get("segments", []):
-            for w in seg.get("words", []):
-                token = str(w.get("word", "")).strip()
-                if not token:
-                    continue
-                words.append(
-                    {
-                        "word": token,
-                        "startFrame": int(float(w["start"]) * FPS),
-                        "endFrame": max(
-                            int(float(w["start"]) * FPS) + 2,
-                            int(float(w["end"]) * FPS),
-                        ),
-                    }
-                )
-        if words:
-            return words
-    except Exception as exc:
-        print(f"[OkikeV5] Whisper word sync skipped ({exc}); using proportional timing.")
-
-    tokens = fallback_text.split()
-    fpw = (total_dur * FPS) / max(1, len(tokens))
-    return [
-        {"word": w, "startFrame": int(i * fpw), "endFrame": int((i + 1) * fpw)}
-        for i, w in enumerate(tokens)
-    ]
 
 
 def lipsync_clip(
@@ -137,151 +90,170 @@ def lipsync_clip(
         )
 
 
-def render_lesson_v5(
+def convert_directed_scenes_to_remotion(
+    scenes: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    out = []
+    for sc in scenes:
+        spec = sc.get("visual_spec") or {}
+        st = sc.get("scene_type", "key_term_callout")
+        bullets: list[str] = []
+        if st == "pause_and_predict":
+            bullets = [str(spec.get("answer") or "Review the key concept.")]
+        elif isinstance(spec.get("steps"), list):
+            bullets = [str(x) for x in spec["steps"]]
+        elif isinstance(spec.get("points"), list):
+            bullets = [str(x) for x in spec["points"]]
+        elif isinstance(spec.get("bullets"), list):
+            bullets = [str(x) for x in spec["bullets"]]
+        elif spec.get("definition"):
+            bullets = [str(spec["definition"])]
+            if spec.get("example"):
+                bullets.append(f"Example: {spec['example']}")
+
+        out.append(
+            {
+                "template": st,
+                "heading": sc.get("on_screen_text") or "Lesson",
+                "subtitle": str(spec.get("question") or spec.get("subtitle") or ""),
+                "bullets": bullets,
+                "codeSnippet": spec.get("code"),
+                "stats": spec.get("stats"),
+                "sourceCitation": sc.get("source_citation") or "",
+                "resolvedAssets": sc.get("resolved_assets") or {},
+                "durationInFrames": int(sc.get("durationInFrames") or 120),
+            }
+        )
+    return out
+
+
+def render_lesson_institutional(
     job: dict[str, Any],
-    kokoro: Kokoro,
     remotion_dir: Path,
     latentsync_dir: Path,
     host_female: Path,
     host_male: Path,
+    work_root: Path,
+    course_sequences: dict[str, list[list[str]]],
     out_mp4: Path,
     out_vtt: Path,
-) -> None:
+    render_portrait: bool = False,
+) -> dict[str, Any]:
+    course_id = str(job.get("courseId") or "default")
+    course_title = str(job.get("courseTitle") or "Okike Academy")
+    module_title = str(job.get("moduleTitle") or "Module 1")
+    lesson_title = str(job.get("lessonTitle") or "Lesson")
     video_model = str(job.get("videoModel") or "okike-v5-female")
+
     is_male = "male" in video_model and "female" not in video_model
     voice = "am_michael" if is_male else "af_heart"
     host_name = "Tunde • Okike Host" if is_male else "Amara • Okike Host"
     base_host = host_male if (is_male and host_male.exists()) else host_female
 
-    storyboard = job.get("videoStoryboard") or []
-    if not storyboard:
-        raise ValueError("Empty videoStoryboard")
+    prev_seqs = course_sequences.setdefault(course_id, [])
+    lesson_dir = work_root / str(job["lessonId"])
+    lesson_dir.mkdir(parents=True, exist_ok=True)
 
-    public_dir = remotion_dir / "public"
-    public_dir.mkdir(exist_ok=True)
+    # Stages 1, 2 & 3: Planner -> Critic -> Scene Director (with hard variety validation)
+    print(f"[Institutional] Stage 1-2 Planner & Critic for: {lesson_title}")
+    plan, critic_report = plan_with_critic_loop(
+        course_title=course_title,
+        module_title=module_title,
+        lesson_title=lesson_title,
+        level="Beginner",
+        previous_sequences=prev_seqs,
+    )
+    print(f"[Institutional] Stage 3 Scene Director (Critic passed={critic_report['passed']})...")
+    scenes = run_stage3_director(plan, previous_sequences=prev_seqs)
 
-    # 1. Per-scene Kokoro-82M audio synthesis -> exact scene durations!
-    scene_audios: list[np.ndarray] = []
-    scene_wavs: list[Path] = []
-    scenes_spec: list[dict[str, Any]] = []
-    vtt_lines = ["WEBVTT", ""]
-    all_text_parts: list[str] = []
-    sr = 24000
+    # Stage 4: HTML/CSS UI Mockups, Code Previews & licenses.json
+    assets_dir = lesson_dir / "assets"
+    print("[Institutional] Stage 4 Asset Generator + licenses.json...")
+    scenes, licenses = run_stage4_assets(scenes, assets_dir)
 
-    with tempfile.TemporaryDirectory() as tmp:
-        tdir = Path(tmp)
-        cursor_sec = 0.0
-        for idx, sc in enumerate(storyboard):
-            narration = str(sc.get("narration") or sc.get("heading") or f"Part {idx + 1}").strip()
-            all_text_parts.append(narration)
-            samples, sr = kokoro.create(narration, voice=voice, speed=1.05, lang="en-us")
-            # Add a crisp 0.25s breath pad after each scene
-            breath = np.zeros(int(sr * 0.25), dtype=np.float32)
-            padded = np.concatenate([samples.astype(np.float32), breath])
-            dur_sec = len(padded) / float(sr)
-
-            wpath = tdir / f"scene_{idx}.wav"
-            sf.write(str(wpath), padded, sr)
-            scene_wavs.append(wpath)
-            scene_audios.append(padded)
-
-            # Compensate for TransitionSeries overlap so speech never gets cut off
-            overlap_pad = TRANSITION_FRAMES if idx < len(storyboard) - 1 else 6
-            frames = max(60, int(round(dur_sec * FPS)) + overlap_pad)
-
-            scenes_spec.append(
-                {
-                    "template": sc.get("template") or ("host_intro" if idx == 0 else "host_recap" if idx == len(storyboard) - 1 else "framework_triad"),
-                    "heading": sc.get("heading") or job.get("lessonTitle") or f"Part {idx + 1}",
-                    "subtitle": sc.get("subtitle") or "",
-                    "bullets": sc.get("bullets") or [],
-                    "codeSnippet": sc.get("codeSnippet"),
-                    "defenseLabel": sc.get("defenseLabel"),
-                    "stats": sc.get("stats"),
-                    "durationInFrames": frames,
-                }
-            )
-
-            vtt_lines.append(f"{format_vtt_ts(cursor_sec)} --> {format_vtt_ts(cursor_sec + dur_sec)}")
-            vtt_lines.append(narration)
-            vtt_lines.append("")
-            cursor_sec += dur_sec
-
-        # 2. Mix voice + subtle transition whoosh SFX + warm studio ambient bed
-        full_voice = np.concatenate(scene_audios)
-        full_voice_wav = tdir / "full_voice.wav"
-        sf.write(str(full_voice_wav), full_voice, sr)
-
-        total_dur = len(full_voice) / float(sr)
-        t = np.linspace(0, total_dur, len(full_voice), endpoint=False)
-        bed = (
-            0.30 * np.sin(2 * np.pi * 98.0 * t)
-            + 0.20 * np.sin(2 * np.pi * 146.83 * t)
-            + 0.15 * np.sin(2 * np.pi * 196.0 * t)
-        ).astype(np.float32) * 0.028
-
-        mix = full_voice + bed
-        whoosh = make_whoosh(sr)
-        offset = 0
-        for idx, arr in enumerate(scene_audios[:-1]):
-            offset += len(arr)
-            start = max(0, offset - len(whoosh) // 2)
-            end = min(len(mix), start + len(whoosh))
-            mix[start:end] += whoosh[: end - start]
-
-        mix = np.clip(mix, -0.98, 0.98)
-        sf.write(str(public_dir / "lesson_mix.wav"), mix, sr)
-
-        # 3. Exact Whisper word timestamps for kinetic captions
-        caption_words = extract_whisper_words(
-            full_voice_wav, " ".join(all_text_parts), total_dur
-        )
-
-        # 4. Fast LatentSync (10 steps) ONLY on Intro (scene 0) & Recap (last scene)!
-        intro_out = public_dir / "intro_host.mp4"
-        recap_out = public_dir / "recap_host.mp4"
-        print(f"[OkikeV5] Lip-syncing {host_name} for Intro & Recap (10 steps)...")
-        lipsync_clip(latentsync_dir, base_host, scene_wavs[0], intro_out, steps=10)
-        if len(scene_wavs) > 1:
-            lipsync_clip(latentsync_dir, base_host, scene_wavs[-1], recap_out, steps=10)
-        else:
-            recap_out.write_bytes(intro_out.read_bytes())
-
-    # 5. Calculate exact TransitionSeries total frame count & render Remotion v5!
-    n_transitions = max(0, len(scenes_spec) - 1)
-    total_frames = sum(s["durationInFrames"] for s in scenes_spec) - (
-        n_transitions * TRANSITION_FRAMES
+    # Stage 5: Per-scene Kokoro-82M + Pronunciation Dict + -16 LUFS + VTT/SRT/Transcript
+    audio_dir = lesson_dir / "audio"
+    print("[Institutional] Stage 5 Narration, -16 LUFS & Accessibility outputs...")
+    timing = run_stage5_narration(
+        scenes=scenes,
+        audio_dir=audio_dir,
+        voice=voice,
+        licenses=licenses,
     )
 
+    # Stage 7: Automated QA Gate BEFORE rendering/publishing
+    print("[Institutional] Stage 7 Automated QA Gate...")
+    qa = run_stage7_qa_gate(
+        plan=plan,
+        scenes=timing["scenes"],
+        timing_bundle=timing,
+        licenses=licenses,
+        previous_sequences=prev_seqs,
+    )
+    if not qa["passed"]:
+        raise RuntimeError(f"QA Gate blocked publish: {qa['failures']}")
+
+    # Stage 6: Copy assets + audio into Remotion public/ & lip-sync ONLY intro & recap
+    public_dir = remotion_dir / "public"
+    public_dir.mkdir(exist_ok=True)
+    shutil.copy2(timing["master_audio_path"], public_dir / "lesson_mix.wav")
+    for asset_file in assets_dir.glob("*.png"):
+        shutil.copy2(asset_file, public_dir / asset_file.name)
+
+    intro_out = public_dir / "intro_host.mp4"
+    recap_out = public_dir / "recap_host.mp4"
+    print(f"[Institutional] Fast 10-step LatentSync on Intro & Recap ({host_name})...")
+    lipsync_clip(latentsync_dir, base_host, Path(timing["scenes"][0]["audio_path"]), intro_out, steps=10)
+    lipsync_clip(latentsync_dir, base_host, Path(timing["scenes"][-1]["audio_path"]), recap_out, steps=10)
+
+    remotion_scenes = convert_directed_scenes_to_remotion(timing["scenes"])
+    total_frames = sum(int(s["durationInFrames"]) for s in remotion_scenes)
     props = {
-        "courseTitle": str(job.get("courseTitle") or "OKIKE ACADEMY")[:34].upper(),
+        "courseTitle": course_title[:34].upper(),
         "hostName": host_name,
         "durationInFrames": max(90, total_frames),
         "audioFile": "lesson_mix.wav",
         "introHostVideo": "intro_host.mp4",
         "recapHostVideo": "recap_host.mp4",
-        "captionWords": caption_words,
-        "scenes": scenes_spec,
+        "captionWords": timing["caption_words"],
+        "scenes": remotion_scenes,
     }
-    props_path = remotion_dir / "v5_props.json"
-    props_path.write_text(json.dumps(props, indent=2), encoding="utf-8")
+    (remotion_dir / "v6_props.json").write_text(json.dumps(props, indent=2), encoding="utf-8")
 
-    print(f"[OkikeV5] Rendering Remotion v5 ({total_frames} frames @ {FPS}fps)...")
+    # Render 1080p Landscape Master (zero title ghosting!)
+    print(f"[Institutional] Stage 6 Rendering 1080p Landscape ({total_frames} frames)...")
     subprocess.run(
         [
             "npx", "remotion", "render", "src/index.ts", "OkikeLesson",
-            str(out_mp4.resolve()), "--props=./v5_props.json", "--codec=h264", "--gl=angle",
+            str(out_mp4.resolve()), "--props=./v6_props.json", "--codec=h264", "--gl=angle",
         ],
         cwd=str(remotion_dir),
         check=True,
     )
-    out_vtt.write_text("\n".join(vtt_lines), encoding="utf-8")
+
+    if render_portrait:
+        portrait_mp4 = out_mp4.with_name(out_mp4.stem + "_portrait_9x16.mp4")
+        print("[Institutional] Stage 6 Rendering 1080p Portrait (9:16)...")
+        subprocess.run(
+            [
+                "npx", "remotion", "render", "src/index.ts", "OkikeLessonPortrait",
+                str(portrait_mp4.resolve()), "--props=./v6_props.json", "--codec=h264", "--gl=angle",
+            ],
+            cwd=str(remotion_dir),
+            check=True,
+        )
+
+    shutil.copy2(timing["vtt_path"], out_vtt)
+    # Record this lesson's scene sequence so the next lesson in the same course must differ
+    prev_seqs.append(qa["scene_sequence"])
+    return qa
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Okike Studio v5 Auto-Sync Colab Worker")
-    parser.add_argument("--server-url", required=True)
+    parser = argparse.ArgumentParser(description="Okike Institutional Auto-Sync Worker (All Courses)")
+    parser.add_argument("--server-url", default="https://academy.okikeenterprises.com")
     parser.add_argument("--watch", action="store_true")
+    parser.add_argument("--portrait", action="store_true", help="Also render native 9:16 mobile portrait variant")
     parser.add_argument("--poll-interval", type=int, default=10)
     parser.add_argument("--worker-key", default=os.environ.get("WORKER_API_KEY"))
     args = parser.parse_args()
@@ -289,11 +261,12 @@ def main() -> None:
     base = args.server_url.rstrip("/")
     headers = {"x-worker-key": args.worker_key} if args.worker_key else {}
 
-    kokoro = Kokoro("kokoro-v1.0.onnx", "voices-v1.0.bin")
     remotion_dir = Path("remotion_studio")
     latentsync_dir = Path("LatentSync")
     host_female = Path("host_1.mp4")
     host_male = Path("host_2.mp4")
+    work_root = Path("pipeline_cache")
+    course_sequences: dict[str, list[list[str]]] = {}
 
     while True:
         try:
@@ -301,7 +274,7 @@ def main() -> None:
             resp.raise_for_status()
             jobs = resp.json().get("jobs", [])
         except Exception as err:
-            print(f"[OkikeV5] Poll warning: {err}")
+            print(f"[Institutional] Poll warning: {err}")
             if not args.watch:
                 raise
             time.sleep(args.poll_interval)
@@ -309,16 +282,16 @@ def main() -> None:
 
         if not jobs:
             if not args.watch:
-                print("[OkikeV5] No queued lessons.")
+                print("[Institutional] No queued lessons.")
                 return
-            print(f"[OkikeV5] Idle — waiting for queued lessons ({args.poll_interval}s)...")
+            print(f"[Institutional] Idle — waiting for queued lessons ({args.poll_interval}s)...")
             time.sleep(args.poll_interval)
             continue
 
         for job in jobs:
             lesson_id = job["lessonId"]
             title = job.get("lessonTitle", lesson_id)
-            print(f"\n[OkikeV5] === Rendering Lesson: {title} ===")
+            print(f"\n[Institutional] === Processing: {title} ===")
             requests.post(
                 f"{base}/api/worker/jobs/{lesson_id}/status",
                 json={"status": "processing"},
@@ -329,8 +302,9 @@ def main() -> None:
                 with tempfile.TemporaryDirectory() as out_tmp:
                     mp4 = Path(out_tmp) / f"{lesson_id}.mp4"
                     vtt = Path(out_tmp) / f"{lesson_id}.vtt"
-                    render_lesson_v5(
-                        job, kokoro, remotion_dir, latentsync_dir, host_female, host_male, mp4, vtt
+                    render_lesson_institutional(
+                        job, remotion_dir, latentsync_dir, host_female, host_male,
+                        work_root, course_sequences, mp4, vtt, render_portrait=args.portrait,
                     )
                     with mp4.open("rb") as vf, vtt.open("rb") as sf:
                         up = requests.post(
@@ -340,12 +314,12 @@ def main() -> None:
                                 "video": (f"{lesson_id}.mp4", vf, "video/mp4"),
                                 "subtitles": (f"{lesson_id}.vtt", sf, "text/vtt"),
                             },
-                            timeout=180,
+                            timeout=240,
                         )
                         up.raise_for_status()
-                print(f"[OkikeV5] Published v5 explainer video for: {title}")
+                print(f"[Institutional] Published QA-passed 1080p video for: {title}")
             except Exception as exc:
-                print(f"[OkikeV5] Failed {lesson_id}: {exc}")
+                print(f"[Institutional] Failed {lesson_id}: {exc}")
                 requests.post(
                     f"{base}/api/worker/jobs/{lesson_id}/status",
                     json={"status": "failed", "error": str(exc)},
