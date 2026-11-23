@@ -92,7 +92,7 @@ def _call_openrouter_json(
     models_to_try = [env_model] if env_model else [
         "openrouter/free",
         "meta-llama/llama-3.3-70b-instruct:free",
-        "google/gemma-3-27b-it:free",
+        "openrouter/free",
     ]
     headers = {
         "Authorization": f"Bearer {api_key}",
