@@ -231,7 +231,7 @@ def render_lesson_institutional(
     public_dir = remotion_dir / "public"
     public_dir.mkdir(exist_ok=True)
     shutil.copy2(timing["master_audio_path"], public_dir / "lesson_mix.wav")
-    for asset_file in assets_dir.glob("*.png"):
+    for asset_file in list(assets_dir.glob("*.png")) + list(assets_dir.glob("*.mp4")):
         shutil.copy2(asset_file, public_dir / asset_file.name)
 
     intro_out = public_dir / "intro_host.mp4"

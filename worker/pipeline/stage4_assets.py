@@ -30,6 +30,102 @@ OKIKE_STYLE_PREFIX = (
 
 _IMAGE_PIPE: Any = None
 _IMAGE_MODEL_USED: str = ""
+_VIDEO_PIPE: Any = None
+
+
+def _unload_video_pipeline() -> None:
+    """Frees GPU VRAM after Wan2.2-TI2V-5B finishes so LatentSync has full headroom."""
+    global _VIDEO_PIPE
+    if _VIDEO_PIPE is None:
+        return
+    try:
+        import torch
+
+        del _VIDEO_PIPE
+        _VIDEO_PIPE = None
+        gc.collect()
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+    except Exception:
+        _VIDEO_PIPE = None
+
+
+def _animate_illustration_with_wan(
+    image_png: Path,
+    subject_prompt: str,
+    out_mp4: Path,
+) -> bool:
+    """Animates a crisp FLUX illustration into a smooth looping MP4 via Wan2.2-TI2V-5B."""
+    global _VIDEO_PIPE
+    enabled = os.environ.get("OKIKE_ANIMATE_ILLUSTRATIONS", "1").strip().lower()
+    if enabled in ("0", "false", "off", "none"):
+        return False
+
+    try:
+        import torch
+
+        if not torch.cuda.is_available():
+            return False
+        vram_gb = torch.cuda.get_device_properties(0).total_memory / (1024**3)
+        if vram_gb < 18.0:
+            print(f"[Stage 4 Assets] GPU has {vram_gb:.1f} GB VRAM (<18 GB); keeping crisp Ken Burns PNG.")
+            return False
+
+        from diffusers import AutoencoderKLWan, WanImageToVideoPipeline
+        from diffusers.utils import export_to_video, load_image
+
+        model_id = os.environ.get(
+            "OKIKE_VIDEO_MODEL", "Wan-AI/Wan2.2-TI2V-5B-Diffusers"
+        ).strip()
+
+        if _VIDEO_PIPE is None:
+            print(f"[Stage 4 Assets] Loading {model_id} (bfloat16 + CPU offload)...")
+            vae = AutoencoderKLWan.from_pretrained(
+                model_id, subfolder="vae", torch_dtype=torch.float32
+            )
+            pipe = WanImageToVideoPipeline.from_pretrained(
+                model_id, vae=vae, torch_dtype=torch.bfloat16
+            )
+            pipe.enable_model_cpu_offload()
+            _VIDEO_PIPE = pipe
+
+        img = load_image(str(image_png)).resize((832, 480))
+        motion_prompt = (
+            f"Smooth subtle cinematic editorial motion, gentle camera drift, crisp animated details, "
+            f"no text, no distortion: {subject_prompt.strip()}"
+        )
+        out = _VIDEO_PIPE(
+            image=img,
+            prompt=motion_prompt,
+            negative_prompt="blurry, distorted, morphing text, flicker, watermark, low quality",
+            height=480,
+            width=832,
+            num_frames=65,
+            num_inference_steps=20,
+            guidance_scale=5.0,
+        )
+        frames = out.frames[0]
+        raw_mp4 = out_mp4.with_name(out_mp4.stem + "_raw.mp4")
+        export_to_video(frames, str(raw_mp4), fps=24)
+        # Create a seamless ping-pong loop (~22s) so it never freezes or jump-cuts during narration
+        import subprocess
+        loop_cmd = [
+            "ffmpeg", "-y", "-i", str(raw_mp4),
+            "-filter_complex",
+            "[0:v]split[f][b];[b]reverse[r];[f][r]concat=n=2:v=1:a=0,loop=loop=4:size=32767:start=0[out]",
+            "-map", "[out]", "-t", "24", "-c:v", "libx264", "-pix_fmt", "yuv420p", "-preset", "fast",
+            str(out_mp4),
+        ]
+        res = subprocess.run(loop_cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        if res.returncode != 0 or not out_mp4.exists():
+            raw_mp4.replace(out_mp4)
+        else:
+            raw_mp4.unlink(missing_ok=True)
+        print(f"[Stage 4 Assets] Animated illustration ({model_id}): {out_mp4.name}")
+        return out_mp4.exists()
+    except Exception as exc:
+        print(f"[Stage 4 Assets] Wan2.2 animation skipped ({exc}); using crisp PNG fallback.")
+        return False
 
 
 def _load_image_pipeline() -> tuple[Any, str]:
@@ -402,6 +498,43 @@ def run_stage4_assets(
 
     if used_diffusion:
         _unload_image_pipeline()
+
+    # Second pass: animate generated illustrations with Wan2.2-TI2V-5B (loads once, then unloads)
+    used_video_anim = False
+    for sc in scenes:
+        assets = sc.get("resolved_assets") or {}
+        illus_name = assets.get("illustration")
+        if not illus_name:
+            continue
+        png_path = assets_dir / illus_name
+        if not png_path.exists():
+            continue
+        subject_prompt, alt_text = _extract_illustration_prompt(sc)
+        mp4_path = png_path.with_suffix(".mp4")
+        if not mp4_path.exists():
+            if _animate_illustration_with_wan(png_path, subject_prompt, mp4_path):
+                used_video_anim = True
+        if mp4_path.exists():
+            assets["illustration_video"] = mp4_path.name
+            sc["resolved_assets"] = assets
+            licenses.append(
+                to_dict(
+                    AssetRecord(
+                        asset_id=mp4_path.stem,
+                        asset_type="ai_animated_illustration",
+                        file_path=mp4_path.name,
+                        alt_text=alt_text,
+                        source=f"AI Animated ({os.environ.get('OKIKE_VIDEO_MODEL', 'Wan-AI/Wan2.2-TI2V-5B-Diffusers')})",
+                        license="Apache-2.0 / Okike Academy Original",
+                        author="Okike Academy Pipeline",
+                        date=today,
+                        prompt=subject_prompt,
+                    )
+                )
+            )
+
+    if used_video_anim:
+        _unload_video_pipeline()
 
     (assets_dir / "licenses.json").write_text(
         json.dumps({"generated_at": today, "assets": licenses}, indent=2),

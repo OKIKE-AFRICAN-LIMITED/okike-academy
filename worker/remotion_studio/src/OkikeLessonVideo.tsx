@@ -870,6 +870,7 @@ const SceneEditorialIllustration: React.FC<{
     extrapolateRight: "clamp",
   });
   const imgFile = sc.resolvedAssets?.illustration || "";
+  const videoFile = sc.resolvedAssets?.illustration_video || "";
   const bullets = (sc.bullets || []).slice(0, 3);
   const badge =
     sc.template === "real_world_scenario"
@@ -887,7 +888,7 @@ const SceneEditorialIllustration: React.FC<{
         gap: isPortrait ? 36 : 56,
       }}
     >
-      {/* Framed AI Editorial Illustration with smooth Ken Burns zoom */}
+      {/* Framed AI Editorial Illustration (Wan2.2 animated MP4 if available, else smooth Ken Burns PNG) */}
       <div
         style={{
           flex: isPortrait ? undefined : "0 0 56%",
@@ -901,7 +902,17 @@ const SceneEditorialIllustration: React.FC<{
           transform: `scale(${interpolate(s, [0, 1], [0.96, 1])})`,
         }}
       >
-        {imgFile && (
+        {videoFile ? (
+          <OffthreadVideo
+            src={staticFile(videoFile)}
+            muted
+            style={{
+              width: "100%",
+              height: "100%",
+              objectFit: "cover",
+            }}
+          />
+        ) : imgFile ? (
           <Img
             src={staticFile(imgFile)}
             style={{
@@ -911,7 +922,7 @@ const SceneEditorialIllustration: React.FC<{
               transform: `scale(${zoom})`,
             }}
           />
-        )}
+        ) : null}
         <div
           style={{
             position: "absolute",
