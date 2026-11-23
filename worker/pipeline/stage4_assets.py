@@ -96,7 +96,9 @@ def _animate_illustration_with_wan(
             pipe = WanImageToVideoPipeline.from_pretrained(
                 model_id, vae=vae, torch_dtype=torch.bfloat16, token=hf_token
             )
-            if vram_gb >= 75.0:
+            # Wan2.2-I2V-A14B has two 14B experts + T5-XXL (~75GB weights); always offload
+            # between components unless on >110GB VRAM so activations never OOM an 80GB A100.
+            if vram_gb >= 110.0 or (not is_a14b and vram_gb >= 40.0):
                 pipe.to("cuda")
             else:
                 pipe.enable_model_cpu_offload()
@@ -158,6 +160,7 @@ def _animate_illustration_with_wan(
         return out_mp4.exists()
     except Exception as exc:
         print(f"[Stage 4 Assets] Wan2.2 animation skipped ({exc}); using crisp PNG fallback.")
+        _unload_video_pipeline()
         return False
 
 
