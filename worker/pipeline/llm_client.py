@@ -86,28 +86,35 @@ def _call_openrouter_json(
     api_key: str,
     prompt: str,
     temperature: float,
-    max_retries: int = 2,
+    max_retries: int = 3,
 ) -> dict[str, Any]:
-    model = os.environ.get("OPENROUTER_MODEL", "openrouter/free").strip() or "openrouter/free"
+    env_model = os.environ.get("OPENROUTER_MODEL", "").strip()
+    models_to_try = [env_model] if env_model else [
+        "openrouter/free",
+        "meta-llama/llama-3.3-70b-instruct:free",
+        "google/gemma-3-27b-it:free",
+    ]
     headers = {
         "Authorization": f"Bearer {api_key}",
         "Content-Type": "application/json",
         "HTTP-Referer": "https://academy.okikeenterprises.com",
         "X-Title": "Okike Academy Video Pipeline",
     }
-    payload = {
-        "model": model,
-        "temperature": temperature,
-        "messages": [
-            {
-                "role": "system",
-                "content": "You are a strict JSON generator. Return ONLY a single valid JSON object with no markdown fences or extra commentary.",
-            },
-            {"role": "user", "content": prompt},
-        ],
-    }
     last_err = ""
     for attempt in range(1, max_retries + 1):
+        model = models_to_try[(attempt - 1) % len(models_to_try)]
+        payload = {
+            "model": model,
+            "temperature": temperature,
+            "max_tokens": 4096,
+            "messages": [
+                {
+                    "role": "system",
+                    "content": "You are a strict JSON generator. Return ONLY a single valid JSON object with no markdown fences or extra commentary.",
+                },
+                {"role": "user", "content": prompt},
+            ],
+        }
         try:
             resp = requests.post(
                 "https://openrouter.ai/api/v1/chat/completions",
@@ -117,22 +124,24 @@ def _call_openrouter_json(
             )
             if resp.ok:
                 data = resp.json()
-                text = (
-                    data.get("choices", [{}])[0]
-                    .get("message", {})
-                    .get("content", "")
-                )
+                msg = data.get("choices", [{}])[0].get("message", {}) or {}
+                text = (msg.get("content") or "").strip()
                 if not text:
-                    raise RuntimeError("OpenRouter returned empty content.")
+                    last_err = f"OpenRouter ({model}) returned empty content."
+                    if attempt < max_retries:
+                        print(f"[LLM] {last_err} Retrying with next model...")
+                        time.sleep(2 * attempt)
+                        continue
+                    raise RuntimeError(last_err)
                 return _extract_json(text)
 
-            last_err = f"OpenRouter API error ({resp.status_code}): {resp.text[:300]}"
-            if resp.status_code in (429, 500, 502, 503, 504) and attempt < max_retries:
+            last_err = f"OpenRouter API error ({resp.status_code}) on {model}: {resp.text[:300]}"
+            if attempt < max_retries:
                 time.sleep(3 * attempt)
                 continue
             raise RuntimeError(last_err)
-        except (requests.RequestException, json.JSONDecodeError) as exc:
-            last_err = f"OpenRouter error: {exc}"
+        except (requests.RequestException, json.JSONDecodeError, RuntimeError) as exc:
+            last_err = f"OpenRouter error ({model}): {exc}"
             if attempt < max_retries:
                 time.sleep(2 * attempt)
                 continue
