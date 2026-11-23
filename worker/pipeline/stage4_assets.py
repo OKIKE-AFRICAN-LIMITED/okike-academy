@@ -106,21 +106,31 @@ def _animate_illustration_with_wan(
         )
         frames = out.frames[0]
         raw_mp4 = out_mp4.with_name(out_mp4.stem + "_raw.mp4")
+        pp_mp4 = out_mp4.with_name(out_mp4.stem + "_pp.mp4")
         export_to_video(frames, str(raw_mp4), fps=24)
-        # Create a seamless ping-pong loop (~22s) so it never freezes or jump-cuts during narration
+        # Create a seamless ping-pong loop (~24s) with zero RAM bloat (-stream_loop copies packets in 0.05s)
         import subprocess
-        loop_cmd = [
+        pp_cmd = [
             "ffmpeg", "-y", "-i", str(raw_mp4),
             "-filter_complex",
-            "[0:v]split[f][b];[b]reverse[r];[f][r]concat=n=2:v=1:a=0,loop=loop=4:size=32767:start=0[out]",
-            "-map", "[out]", "-t", "24", "-c:v", "libx264", "-pix_fmt", "yuv420p", "-preset", "fast",
-            str(out_mp4),
+            "[0:v]split[f][b];[b]reverse[r];[f][r]concat=n=2:v=1:a=0[out]",
+            "-map", "[out]", "-c:v", "libx264", "-pix_fmt", "yuv420p", "-preset", "fast",
+            str(pp_mp4),
         ]
-        res = subprocess.run(loop_cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        if res.returncode != 0 or not out_mp4.exists():
-            raw_mp4.replace(out_mp4)
-        else:
+        r1 = subprocess.run(pp_cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        if r1.returncode == 0 and pp_mp4.exists():
+            loop_cmd = [
+                "ffmpeg", "-y", "-stream_loop", "5", "-i", str(pp_mp4),
+                "-t", "24", "-c", "copy", str(out_mp4),
+            ]
+            r2 = subprocess.run(loop_cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            if r2.returncode != 0 or not out_mp4.exists():
+                pp_mp4.replace(out_mp4)
+            else:
+                pp_mp4.unlink(missing_ok=True)
             raw_mp4.unlink(missing_ok=True)
+        else:
+            raw_mp4.replace(out_mp4)
         print(f"[Stage 4 Assets] Animated illustration ({model_id}): {out_mp4.name}")
         return out_mp4.exists()
     except Exception as exc:
