@@ -502,6 +502,160 @@ const SceneExplainerCard: React.FC<{ sc: V5SceneSpec; isPortrait: boolean }> = (
   );
 };
 
+/* ---------------- SCENE: BESPOKE EDITORIAL ILLUSTRATION (FLUX / SDXL) ---------------- */
+const SceneEditorialIllustration: React.FC<{
+  sc: V5SceneSpec;
+  isPortrait: boolean;
+}> = ({ sc, isPortrait }) => {
+  const frame = useCurrentFrame();
+  const { fps, durationInFrames } = useVideoConfig();
+  const s = spring({ frame, fps, config: { damping: 16 } });
+  const zoom = interpolate(frame, [0, Math.max(30, durationInFrames)], [1.0, 1.08], {
+    extrapolateRight: "clamp",
+  });
+  const imgFile = sc.resolvedAssets?.illustration || "";
+  const bullets = (sc.bullets || []).slice(0, 3);
+  const badge =
+    sc.template === "real_world_scenario"
+      ? "REAL-WORLD SCENARIO"
+      : "VISUAL ANALOGY";
+
+  return (
+    <AbsoluteFill
+      style={{
+        display: "flex",
+        flexDirection: isPortrait ? "column" : "row",
+        alignItems: "center",
+        justifyContent: "center",
+        padding: isPortrait ? "135px 52px 245px" : "105px 80px 145px",
+        gap: isPortrait ? 36 : 56,
+      }}
+    >
+      {/* Framed AI Editorial Illustration with smooth Ken Burns zoom */}
+      <div
+        style={{
+          flex: isPortrait ? undefined : "0 0 56%",
+          width: isPortrait ? "100%" : undefined,
+          aspectRatio: "16 / 9",
+          position: "relative",
+          overflow: "hidden",
+          border: `3px solid ${BORDER}`,
+          background: "#0a0a09",
+          opacity: s,
+          transform: `scale(${interpolate(s, [0, 1], [0.96, 1])})`,
+        }}
+      >
+        {imgFile && (
+          <Img
+            src={staticFile(imgFile)}
+            style={{
+              width: "100%",
+              height: "100%",
+              objectFit: "cover",
+              transform: `scale(${zoom})`,
+            }}
+          />
+        )}
+        <div
+          style={{
+            position: "absolute",
+            top: 16,
+            left: 16,
+            background: "rgba(14,14,14,0.88)",
+            border: `2px solid ${LIME}`,
+            color: LIME,
+            fontFamily: MONO_STACK,
+            fontSize: 16,
+            fontWeight: 800,
+            letterSpacing: "0.14em",
+            padding: "6px 14px",
+          }}
+        >
+          ● {badge}
+        </div>
+      </div>
+
+      {/* Editorial heading + key callouts beside/below the illustration */}
+      <div
+        style={{
+          flex: isPortrait ? undefined : 1,
+          width: isPortrait ? "100%" : undefined,
+          display: "flex",
+          flexDirection: "column",
+          gap: 20,
+        }}
+      >
+        <h2
+          style={{
+            fontSize: isPortrait ? 54 : 52,
+            fontWeight: 800,
+            lineHeight: 1.06,
+            letterSpacing: "-0.025em",
+            margin: 0,
+            color: PAPER,
+          }}
+        >
+          {sc.heading}
+        </h2>
+        {sc.subtitle && (
+          <p
+            style={{
+              fontSize: isPortrait ? 30 : 26,
+              color: MUTED,
+              margin: 0,
+              lineHeight: 1.35,
+            }}
+          >
+            {sc.subtitle}
+          </p>
+        )}
+        {bullets.map((b, idx) => {
+          const sb = spring({ frame: frame - 8 - idx * 8, fps, config: { damping: 16 } });
+          return (
+            <div
+              key={idx}
+              style={{
+                display: "flex",
+                alignItems: "center",
+                gap: 16,
+                padding: "16px 20px",
+                background: SURFACE,
+                borderLeft: `5px solid ${idx % 2 === 0 ? LIME : LAVENDER}`,
+                opacity: sb,
+                transform: `translateX(${interpolate(sb, [0, 1], [18, 0])}px)`,
+              }}
+            >
+              <span
+                style={{
+                  fontFamily: MONO_STACK,
+                  fontSize: 20,
+                  fontWeight: 800,
+                  color: INK,
+                  background: LIME,
+                  padding: "4px 10px",
+                  flexShrink: 0,
+                }}
+              >
+                0{idx + 1}
+              </span>
+              <span
+                style={{
+                  fontSize: isPortrait ? 30 : 27,
+                  fontWeight: 700,
+                  color: PAPER,
+                  lineHeight: 1.25,
+                }}
+              >
+                {b}
+              </span>
+            </div>
+          );
+        })}
+      </div>
+    </AbsoluteFill>
+  );
+};
+
 /* ---------------- SCENE: HOST RECAP ---------------- */
 const SceneHostRecap: React.FC<{
   sc: V5SceneSpec;
@@ -588,6 +742,8 @@ export const OkikeLessonVideo: React.FC<OkikeV5Props> = (props) => {
             body = <SceneHookIntro sc={sc} hostVideo={props.introHostVideo} hostName={props.hostName} isPortrait={isPortrait} />;
           } else if (sc.template === "ui_mockup" && (sc.resolvedAssets?.ui_bad || sc.resolvedAssets?.ui_good)) {
             body = <SceneUIMockup sc={sc} isPortrait={isPortrait} />;
+          } else if (sc.resolvedAssets?.illustration) {
+            body = <SceneEditorialIllustration sc={sc} isPortrait={isPortrait} />;
           } else if (sc.template === "pause_and_predict") {
             body = <ScenePausePredict sc={sc} isPortrait={isPortrait} />;
           } else if (sc.template === "recap_scene" || sc.template === "host_recap" || sc.template === "takeaways") {

@@ -9,12 +9,12 @@ Previous lesson scene sequences in this course (you MUST NOT repeat any of these
 
 Available scene_type library (choose ONLY what fits visual_needs):
 - "hook_scene": Bold minimal problem/question + learning objective (first scene; set use_presenter_avatar: true).
-- "ui_mockup": Real HTML/CSS interface screen (for UI/UX lessons, include visual_spec.ui_variant: "bad" | "good" | "compare" and visual_spec.ui_template: "landing_hero" | "signup_form" | "dashboard_card" | "pricing_table", plus exact copy fields).
-- "before_after": Side-by-side comparison of wrong way vs right way.
+- "ui_mockup": Real HTML/CSS interface screen (MANDATORY for UI/UX lessons! Set visual_spec.ui_variant: "compare" for Bad vs Good UI, visual_spec.ui_template: "landing_hero" | "signup_form" | "dashboard_card", plus ui_title, ui_subtitle, ui_cta. NEVER use AI image generation for UI screens).
+- "before_after": Side-by-side comparison of wrong way vs right way (visual_spec.bullets: 2 wrong items then 2 right items).
 - "process_flow": Step-by-step animated flow (3-4 steps in visual_spec.steps).
 - "live_code_preview": Code types out line-by-line + rendered output beside it (visual_spec.code, visual_spec.language).
-- "analogy_illustration": Real-world analogy visual (include asset_requests with a clear illustration prompt and alt_text).
-- "real_world_scenario": Concrete case study with an on-screen decision point.
+- "analogy_illustration": Bespoke AI-generated editorial illustration of a real-world concept or analogy (e.g. a glowing server rack under cyberattack, a vault lock, data packets). MUST include visual_spec.illustration_prompt (vivid, concrete, 15-35 words, NO text or words inside the image) and visual_spec.alt_text, plus 2-3 short visual_spec.bullets.
+- "real_world_scenario": Concrete case study with a bespoke AI illustration + on-screen decision point. MUST include visual_spec.illustration_prompt (vivid, concrete, NO text inside the image), visual_spec.alt_text, and visual_spec.bullets.
 - "pause_and_predict": Question on screen -> 3-second thinking pause -> answer reveal (MANDATORY once per lesson; visual_spec.question, visual_spec.answer).
 - "key_term_callout": One term, plain definition, concrete example.
 - "data_scene": Chart ONLY if plan.sources has a real sourced statistic (MUST set source_citation; max once per lesson).
