@@ -29,6 +29,7 @@ from typing import Any
 import requests
 from kokoro_onnx import Kokoro
 
+from pipeline.llm_client import unload_local_llm
 from pipeline.stage4_assets import run_stage4_assets
 from pipeline.stage5_narration import run_stage5_narration
 from pipeline.stage7_qa import run_stage7_qa_gate
@@ -199,6 +200,8 @@ def render_lesson_institutional(
     )
     print(f"[Institutional] Stage 3 Scene Director (Critic passed={critic_report['passed']})...")
     scenes = run_stage3_director(plan, previous_sequences=prev_seqs)
+    # Free local HuggingFace LLM VRAM before Stage 4 (FLUX + Wan2.2) loads!
+    unload_local_llm()
 
     # Stage 4: HTML/CSS UI Mockups, Code Previews & licenses.json
     assets_dir = lesson_dir / "assets"

@@ -1,13 +1,16 @@
 """Resilient JSON LLM caller for Okike Academy Pipeline Stages 1-3.
 
-Resilience chain:
-  1. Gemini 2.5 Flash (with retry/backoff on transient 429/500/503 spikes)
-  2. Gemini 2.5 Flash-Lite fallback (same GEMINI_API_KEY, rarely hits 503)
-  3. OpenRouter fallback (OPENROUTER_API_KEY, defaults to `openrouter/free`)
+Providers (selected via OKIKE_LLM_PROVIDER):
+  - "hf" / "local" (RECOMMENDED on Colab GPU — ZERO 503s, ZERO 429s, ZERO quotas!):
+      Runs Qwen/Qwen2.5-14B-Instruct on >=40GB GPUs (A100/G4) or
+      Qwen/Qwen2.5-7B-Instruct on smaller GPUs (L4/T4), then unloads VRAM before Stage 4.
+  - "auto" (default): uses local HF Qwen if OKIKE_LLM_PROVIDER=hf or if GPU >= 15GB and no GEMINI_API_KEY,
+      otherwise Gemini -> OpenRouter -> local HF Qwen fallback.
 """
 
 from __future__ import annotations
 
+import gc
 import json
 import os
 import re
@@ -15,6 +18,10 @@ import time
 from typing import Any
 
 import requests
+
+_HF_MODEL: Any = None
+_HF_TOKENIZER: Any = None
+_HF_MODEL_ID: str = ""
 
 
 def _extract_json(text: str) -> dict[str, Any]:
@@ -32,12 +39,92 @@ def _extract_json(text: str) -> dict[str, Any]:
         raise
 
 
+def unload_local_llm() -> None:
+    """Frees GPU VRAM after Stage 3 so Stage 4 (FLUX + Wan2.2) has full headroom."""
+    global _HF_MODEL, _HF_TOKENIZER, _HF_MODEL_ID
+    if _HF_MODEL is None:
+        return
+    try:
+        import torch
+
+        del _HF_MODEL
+        del _HF_TOKENIZER
+        _HF_MODEL = None
+        _HF_TOKENIZER = None
+        _HF_MODEL_ID = ""
+        gc.collect()
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+        print("[LLM] Unloaded local HuggingFace LLM from GPU VRAM.")
+    except Exception:
+        _HF_MODEL = None
+        _HF_TOKENIZER = None
+
+
+def _call_hf_local_json(prompt: str, temperature: float = 0.35) -> dict[str, Any]:
+    """Runs Qwen2.5-14B-Instruct (A100/G4) or Qwen2.5-7B-Instruct (L4/T4) locally on GPU."""
+    global _HF_MODEL, _HF_TOKENIZER, _HF_MODEL_ID
+    import torch
+    from transformers import AutoModelForCausalLM, AutoTokenizer
+
+    if not torch.cuda.is_available():
+        raise RuntimeError("Local HuggingFace LLM requires a CUDA GPU.")
+
+    vram_gb = torch.cuda.get_device_properties(0).total_memory / (1024**3)
+    default_repo = (
+        "Qwen/Qwen2.5-14B-Instruct" if vram_gb >= 38.0 else "Qwen/Qwen2.5-7B-Instruct"
+    )
+    model_id = os.environ.get("OKIKE_HF_LLM", default_repo).strip() or default_repo
+    hf_token = os.environ.get("HF_TOKEN", "").strip() or None
+
+    if _HF_MODEL is None or _HF_MODEL_ID != model_id:
+        unload_local_llm()
+        print(f"[LLM] Loading local HuggingFace model {model_id} on {vram_gb:.0f}GB GPU...")
+        _HF_TOKENIZER = AutoTokenizer.from_pretrained(model_id, token=hf_token)
+        _HF_MODEL = AutoModelForCausalLM.from_pretrained(
+            model_id,
+            torch_dtype=torch.bfloat16 if torch.cuda.is_bf16_supported() else torch.float16,
+            device_map="auto",
+            token=hf_token,
+        )
+        _HF_MODEL_ID = model_id
+
+    messages = [
+        {
+            "role": "system",
+            "content": (
+                "You are an institutional curriculum designer and video director. "
+                "Return ONLY a single valid JSON object. No markdown fences, no commentary."
+            ),
+        },
+        {"role": "user", "content": prompt},
+    ]
+    text_in = _HF_TOKENIZER.apply_chat_template(
+        messages, tokenize=False, add_generation_prompt=True
+    )
+    inputs = _HF_TOKENIZER([text_in], return_tensors="pt").to(_HF_MODEL.device)
+
+    do_sample = temperature > 0.05
+    with torch.no_grad():
+        out_ids = _HF_MODEL.generate(
+            **inputs,
+            max_new_tokens=3072,
+            do_sample=do_sample,
+            temperature=max(0.1, temperature) if do_sample else None,
+            top_p=0.9 if do_sample else None,
+            pad_token_id=_HF_TOKENIZER.eos_token_id,
+        )
+    gen_ids = out_ids[0][inputs["input_ids"].shape[1] :]
+    raw_text = _HF_TOKENIZER.decode(gen_ids, skip_special_tokens=True)
+    return _extract_json(raw_text)
+
+
 def _call_gemini_model(
     api_key: str,
     model: str,
     prompt: str,
     temperature: float,
-    max_retries: int = 3,
+    max_retries: int = 2,
 ) -> dict[str, Any]:
     url = (
         "https://generativelanguage.googleapis.com/v1beta/models/"
@@ -68,9 +155,7 @@ def _call_gemini_model(
 
             last_err = f"Gemini API error ({resp.status_code}) on {model}: {resp.text[:300]}"
             if resp.status_code in (429, 500, 502, 503, 504) and attempt < max_retries:
-                wait_s = 3 * attempt
-                print(f"[LLM] {model} returned {resp.status_code}, retrying in {wait_s}s...")
-                time.sleep(wait_s)
+                time.sleep(3 * attempt)
                 continue
             raise RuntimeError(last_err)
         except requests.RequestException as exc:
@@ -129,7 +214,6 @@ def _call_openrouter_json(
                 if not text:
                     last_err = f"OpenRouter ({model}) returned empty content."
                     if attempt < max_retries:
-                        print(f"[LLM] {last_err} Retrying with next model...")
                         time.sleep(2 * attempt)
                         continue
                     raise RuntimeError(last_err)
@@ -150,17 +234,28 @@ def _call_openrouter_json(
 
 
 def call_gemini_json(prompt: str, temperature: float = 0.4) -> dict[str, Any]:
+    provider = os.environ.get("OKIKE_LLM_PROVIDER", "hf").strip().lower()
     gemini_key = os.environ.get("GEMINI_API_KEY", "").strip()
     openrouter_key = os.environ.get("OPENROUTER_API_KEY", "").strip()
-
-    if not gemini_key and not openrouter_key:
-        raise RuntimeError(
-            "Either GEMINI_API_KEY or OPENROUTER_API_KEY is required for Stages 1-3."
-        )
-
     errors: list[str] = []
 
-    if gemini_key:
+    # 1. Local HuggingFace Qwen2.5-14B / 7B Instruct (default on GPU: zero 503/429!)
+    if provider in ("hf", "local", "qwen"):
+        try:
+            return _call_hf_local_json(prompt, temperature)
+        except Exception as exc:
+            print(f"[LLM] Local HuggingFace LLM failed: {exc}")
+            errors.append(str(exc))
+
+    # 2. Optional cloud fallbacks if local GPU LLM wasn't used
+    if openrouter_key:
+        try:
+            return _call_openrouter_json(openrouter_key, prompt, temperature)
+        except Exception as exc:
+            print(f"[LLM] OpenRouter failed: {exc}")
+            errors.append(str(exc))
+
+    if gemini_key and provider != "hf":
         for model in ("gemini-2.5-flash", "gemini-2.5-flash-lite"):
             try:
                 return _call_gemini_model(gemini_key, model, prompt, temperature)
@@ -168,12 +263,4 @@ def call_gemini_json(prompt: str, temperature: float = 0.4) -> dict[str, Any]:
                 print(f"[LLM] {model} failed: {exc}")
                 errors.append(str(exc))
 
-    if openrouter_key:
-        print("[LLM] Falling back to OpenRouter...")
-        try:
-            return _call_openrouter_json(openrouter_key, prompt, temperature)
-        except Exception as exc:
-            print(f"[LLM] OpenRouter failed: {exc}")
-            errors.append(str(exc))
-
-    raise RuntimeError(" | ".join(errors))
+    raise RuntimeError(" | ".join(errors) or "No LLM provider available.")
